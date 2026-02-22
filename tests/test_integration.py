@@ -413,3 +413,104 @@ class TestPdfIntegration:
         logger.info("  - %s", preview_html)
         logger.info("  - %s", overlay_png)
         logger.info("  - %s", report_md)
+
+    def test_pdf_golden_structure_expectations(self, tmp_path):
+        """Verify the expected multi-column structure (golden expectations).
+        
+        This test encodes the INTENDED behavior for test.pdf:
+        - Expected headers: "Amount", "Date", "Status" in separate columns
+        - Expected data: Names in column A/1, numbers in column B/2, etc.
+        - This serves as a golden reference for the expected output
+        """
+        out = tmp_path / "test_output.xlsx"
+        result = extract(str(TEST_PDF), str(out))
+        wb = load_workbook(str(result))
+        ws = wb.active
+        
+        # Golden expectations for test.pdf
+        # Based on the fixture, we expect a table with these characteristics:
+        
+        # 1. Expected headers in specific columns (not all in column A)
+        expected_header_mapping = {
+            "Amount": 2,   # Column B
+            "Date": 3,     # Column C  
+            "Status": 4,   # Column D
+        }
+        
+        for header_text, expected_col in expected_header_mapping.items():
+            found = False
+            # Check in a range around expected column (±1 for tolerance)
+            for col in range(max(1, expected_col - 1), expected_col + 2):
+                if col <= ws.max_column:
+                    cell_value = ws.cell(row=1, column=col).value
+                    if cell_value and header_text.lower() in str(cell_value).lower():
+                        found = True
+                        break
+            
+            assert found, (
+                f"Golden expectation failed: Header '{header_text}' should appear "
+                f"near column {expected_col}, but was not found in columns "
+                f"{max(1, expected_col-1)}..{expected_col+1}"
+            )
+        
+        # 2. Expected data pattern: names in column 1, numeric values in column 2
+        expected_names = ["Alice", "Bob", "Charlie", "David", "Eve", "Frank"]
+        found_names = []
+        
+        for row_idx in range(2, min(ws.max_row + 1, 20)):
+            cell_value = ws.cell(row=row_idx, column=1).value
+            if cell_value and str(cell_value).strip():
+                found_names.append(str(cell_value).strip())
+        
+        # At least 3 of the expected names should be found
+        matching_names = [name for name in expected_names if name in found_names]
+        assert len(matching_names) >= 3, (
+            f"Golden expectation failed: Expected at least 3 names from "
+            f"{expected_names} in column 1, but only found {len(matching_names)}: "
+            f"{matching_names}"
+        )
+        
+        # 3. Numeric values should appear in column 2 (Amount column)
+        numeric_values_in_col2 = 0
+        for row_idx in range(2, min(ws.max_row + 1, 10)):
+            cell_value = ws.cell(row=row_idx, column=2).value
+            if cell_value is not None:
+                try:
+                    # Try to interpret as number
+                    float(str(cell_value).replace(",", ""))
+                    numeric_values_in_col2 += 1
+                except (ValueError, TypeError):
+                    pass
+        
+        assert numeric_values_in_col2 >= 3, (
+            f"Golden expectation failed: Expected at least 3 numeric values "
+            f"in column 2 (Amount), but only found {numeric_values_in_col2}"
+        )
+        
+        # 4. Date-like values should appear in column 3
+        date_like_values_in_col3 = 0
+        for row_idx in range(2, min(ws.max_row + 1, 10)):
+            cell_value = ws.cell(row=row_idx, column=3).value
+            if cell_value and str(cell_value).strip():
+                # Check for date-like pattern (contains digits and hyphens/slashes)
+                val_str = str(cell_value)
+                if ("-" in val_str or "/" in val_str) and any(c.isdigit() for c in val_str):
+                    date_like_values_in_col3 += 1
+        
+        assert date_like_values_in_col3 >= 3, (
+            f"Golden expectation failed: Expected at least 3 date-like values "
+            f"in column 3 (Date), but only found {date_like_values_in_col3}"
+        )
+        
+        # 5. Status values should appear in column 4
+        status_keywords = ["Active", "Inactive"]
+        status_values_in_col4 = 0
+        for row_idx in range(2, min(ws.max_row + 1, 10)):
+            cell_value = ws.cell(row=row_idx, column=4).value
+            if cell_value and any(kw.lower() in str(cell_value).lower() for kw in status_keywords):
+                status_values_in_col4 += 1
+        
+        assert status_values_in_col4 >= 3, (
+            f"Golden expectation failed: Expected at least 3 status values "
+            f"in column 4 (Status), but only found {status_values_in_col4}"
+        )
