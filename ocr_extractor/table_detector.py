@@ -6,7 +6,7 @@ Analyses a pre-processed PIL image (or a pdfplumber page) to find:
 - Merged cell regions (especially header merges)
 
 The result is a :class:`TableGrid` – a 2-D list of :class:`CellRegion`
-objects that the excel_writer can turn directly into an openpyxl worksheet.
+objects that the tenancy_parser can convert into an HTML table.
 """
 
 from __future__ import annotations

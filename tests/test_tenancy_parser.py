@@ -7,7 +7,6 @@ import tempfile
 from pathlib import Path
 
 import pytest
-from openpyxl import load_workbook
 
 from ocr_extractor.table_detector import CellRegion, TableGrid
 from ocr_extractor.tenancy_parser import (
@@ -17,7 +16,6 @@ from ocr_extractor.tenancy_parser import (
     ROW_TYPE_OCCUPANCY_SUMMARY,
     ROW_TYPE_RENT_STEP,
     TenancyRow,
-    export_tenancy_to_excel,
     export_tenancy_to_html,
     normalize_date,
     normalize_number,
@@ -250,145 +248,6 @@ class TestParseGridToRows:
         assert rows[0].lease_from == "invalid-date"  # Keeps original
         assert len(rows[0].warnings) > 0
         assert "date" in rows[0].warnings[0].lower()
-
-
-class TestExportTenancyToExcel:
-    """Test Excel export with multi-column guarantee."""
-
-    def test_export_creates_file(self, tmp_path):
-        rows = [
-            TenancyRow(
-                property="Test Property",
-                tenant_name="Test Tenant",
-                suite="101",
-            ),
-        ]
-        output_path = tmp_path / "test.xlsx"
-        result = export_tenancy_to_excel(rows, output_path)
-        assert Path(result).exists()
-
-    def test_export_has_multiple_columns(self, tmp_path):
-        rows = [
-            TenancyRow(
-                property="Test Property",
-                tenant_name="Test Tenant",
-                suite="101",
-                monthly_amount=1000.0,
-                annual_amount=12000.0,
-            ),
-        ]
-        output_path = tmp_path / "test.xlsx"
-        export_tenancy_to_excel(rows, output_path)
-
-        wb = load_workbook(output_path)
-        ws = wb.active
-
-        # Should have at least 10 columns (schema defines 17)
-        assert ws.max_column >= 10
-
-    def test_export_header_row(self, tmp_path):
-        rows = [
-            TenancyRow(property="Test", tenant_name="Tenant"),
-        ]
-        output_path = tmp_path / "test.xlsx"
-        export_tenancy_to_excel(rows, output_path)
-
-        wb = load_workbook(output_path)
-        ws = wb.active
-
-        # Check header row contains expected column names
-        headers = [ws.cell(1, col).value for col in range(1, ws.max_column + 1)]
-        assert "property" in headers
-        assert "tenant_name" in headers
-        assert "suite" in headers
-        assert "monthly_amount" in headers
-
-    def test_export_data_in_correct_columns(self, tmp_path):
-        rows = [
-            TenancyRow(
-                property="Building A",
-                tenant_name="ABC Corp",
-                suite="101",
-                monthly_amount=1000.0,
-            ),
-        ]
-        output_path = tmp_path / "test.xlsx"
-        export_tenancy_to_excel(rows, output_path)
-
-        wb = load_workbook(output_path)
-        ws = wb.active
-
-        # Get header row to find column indices
-        headers = [ws.cell(1, col).value for col in range(1, ws.max_column + 1)]
-
-        # Find column indices
-        property_col = headers.index("property") + 1
-        tenant_col = headers.index("tenant_name") + 1
-        suite_col = headers.index("suite") + 1
-        monthly_col = headers.index("monthly_amount") + 1
-
-        # Check data row (row 2)
-        assert ws.cell(2, property_col).value == "Building A"
-        assert ws.cell(2, tenant_col).value == "ABC Corp"
-        assert ws.cell(2, suite_col).value == "101"
-        assert ws.cell(2, monthly_col).value == 1000.0
-
-    def test_export_multiple_rows(self, tmp_path):
-        rows = [
-            TenancyRow(property="Building A", tenant_name="ABC Corp"),
-            TenancyRow(property="Building B", tenant_name="XYZ Inc"),
-            TenancyRow(property="Building C", tenant_name="Test LLC"),
-        ]
-        output_path = tmp_path / "test.xlsx"
-        export_tenancy_to_excel(rows, output_path)
-
-        wb = load_workbook(output_path)
-        ws = wb.active
-
-        # Should have 1 header + 3 data rows
-        assert ws.max_row == 4
-
-    def test_export_without_warnings_column(self, tmp_path):
-        rows = [
-            TenancyRow(property="Test", warnings=["Some warning"]),
-        ]
-        output_path = tmp_path / "test.xlsx"
-        export_tenancy_to_excel(rows, output_path, include_warnings=False)
-
-        wb = load_workbook(output_path)
-        ws = wb.active
-
-        # Check that warnings column is not present
-        headers = [ws.cell(1, col).value for col in range(1, ws.max_column + 1)]
-        assert "warnings" not in headers
-
-    def test_export_freeze_panes(self, tmp_path):
-        rows = [
-            TenancyRow(property="Test"),
-        ]
-        output_path = tmp_path / "test.xlsx"
-        export_tenancy_to_excel(rows, output_path)
-
-        wb = load_workbook(output_path)
-        ws = wb.active
-
-        # Panes should be frozen below header row
-        assert ws.freeze_panes is not None
-
-    def test_export_column_widths_set(self, tmp_path):
-        rows = [
-            TenancyRow(property="Test"),
-        ]
-        output_path = tmp_path / "test.xlsx"
-        export_tenancy_to_excel(rows, output_path)
-
-        wb = load_workbook(output_path)
-        ws = wb.active
-
-        # Check that column widths are set (not default)
-        # Default width is typically around 8-10
-        col_a_width = ws.column_dimensions["A"].width
-        assert col_a_width > 10  # Should be wider than default
 
 
 class TestExportTenancyToHtml:

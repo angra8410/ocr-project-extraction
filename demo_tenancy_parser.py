@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """Demo script showing tenancy schedule parser without OCR dependencies.
 
-This demonstrates the multi-column Excel output guarantee by creating
+This demonstrates the multi-column HTML output by creating
 a synthetic TableGrid and exporting it using the tenancy parser.
 """
 
 from pathlib import Path
 
 from ocr_extractor.table_detector import CellRegion, TableGrid
-from ocr_extractor.tenancy_parser import export_tenancy_to_excel, parse_grid_to_rows
+from ocr_extractor.tenancy_parser import export_tenancy_to_html, parse_grid_to_rows
 
 
 def create_demo_grid() -> TableGrid:
@@ -63,13 +63,13 @@ def create_demo_grid() -> TableGrid:
 def main():
     """Run the demo."""
     import tempfile
-    
+
     print("=" * 80)
     print("TENANCY SCHEDULE PARSER DEMO")
     print("=" * 80)
     print()
-    print("This demo shows how the tenancy parser guarantees multi-column Excel output")
-    print("by creating a synthetic tenancy schedule and exporting it to Excel.")
+    print("This demo shows how the tenancy parser guarantees multi-column HTML output")
+    print("by creating a synthetic tenancy schedule and exporting it to HTML.")
     print()
 
     # Create synthetic grid
@@ -98,50 +98,29 @@ def main():
             print(f"    Warnings: {'; '.join(row.warnings)}")
         print()
 
-    # Export to Excel (use tempfile for cross-platform compatibility)
+    # Export to HTML
     temp_dir = Path(tempfile.gettempdir())
-    output_path = temp_dir / "demo_tenancy_output.xlsx"
-    print(f"Step 3: Exporting to Excel: {output_path}")
-    result = export_tenancy_to_excel(rows, output_path)
-    print(f"  ✓ Successfully exported to {result}")
+    output_path = temp_dir / "demo_tenancy_output.html"
+    print(f"Step 3: Exporting to HTML: {output_path}")
+    result = export_tenancy_to_html(rows, output_path=output_path)
+    print(f"  ✓ Successfully exported to {output_path}")
     print()
 
-    # Verify multi-column structure
-    print("Step 4: Verifying multi-column structure...")
-    from openpyxl import load_workbook
-
-    wb = load_workbook(result)
-    ws = wb.active
-    print(f"  ✓ Workbook sheet: {ws.title}")
-    print(f"  ✓ Columns: {ws.max_column}")
-    print(f"  ✓ Rows: {ws.max_row}")
-    print()
-
-    # Show header row
-    print("  Header row:")
-    headers = [ws.cell(1, col).value for col in range(1, min(ws.max_column + 1, 12))]
-    for i, header in enumerate(headers, start=1):
-        print(f"    Column {i}: {header}")
-    print()
-
-    # Show first data row
-    print("  First data row:")
-    first_row_values = [ws.cell(2, col).value for col in range(1, min(ws.max_column + 1, 12))]
-    for i, value in enumerate(first_row_values, start=1):
-        if value:
-            print(f"    Column {i}: {value}")
+    # Verify HTML structure
+    print("Step 4: Verifying HTML table structure...")
+    content = output_path.read_text(encoding="utf-8")
+    assert "<table>" in content
+    assert "<thead>" in content
+    assert "<tbody>" in content
+    print(f"  ✓ Valid HTML table")
+    print(f"  ✓ Content length: {len(content)} bytes")
     print()
 
     print("=" * 80)
-    print("SUCCESS: Multi-column Excel file generated!")
+    print("SUCCESS: Multi-column HTML file generated!")
     print("=" * 80)
     print()
-    print(f"You can open the file with: libreoffice {output_path}")
-    print(f"Or verify in Python with:")
-    print(f"  from openpyxl import load_workbook")
-    print(f"  wb = load_workbook('{output_path}')")
-    print(f"  ws = wb.active")
-    print(f"  print(f'Columns: {{ws.max_column}}, Rows: {{ws.max_row}}')")
+    print(f"You can open the file with: xdg-open {output_path}")
     print()
 
 
