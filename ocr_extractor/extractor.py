@@ -74,12 +74,14 @@ def extract(
     if not input_path.exists():
         raise FileNotFoundError(f"Input file not found: {input_path}")
 
-    # HTML format implies tenancy mode
+    # HTML format implies tenancy mode; tenancy mode implies HTML output
     if output_format == "html":
         tenancy_mode = True
+    elif tenancy_mode:
+        output_format = "html"
 
     if output_path is None:
-        suffix = ".json" if output_format == "html" else ".xlsx"
+        suffix = ".html" if output_format == "html" else ".xlsx"
         output_path = input_path.with_suffix(suffix)
     output_path = Path(output_path)
 
@@ -118,12 +120,6 @@ def extract(
 
         tenancy_rows = parse_grid_to_rows(combined_grid)
         export_tenancy_to_html(tenancy_rows, output_path)
-    elif tenancy_mode:
-        logger.info("Using tenancy schedule parser for structured output")
-        from .tenancy_parser import export_tenancy_to_excel, parse_grid_to_rows
-
-        tenancy_rows = parse_grid_to_rows(combined_grid)
-        export_tenancy_to_excel(tenancy_rows, output_path)
     else:
         write_xlsx(combined_grid, output_path)
 
