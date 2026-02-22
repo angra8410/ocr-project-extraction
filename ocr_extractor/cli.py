@@ -49,6 +49,17 @@ def _build_parser() -> argparse.ArgumentParser:
         default=False,
         help="Enable verbose (INFO-level) logging.",
     )
+    parser.add_argument(
+        "--tenancy-mode",
+        action="store_true",
+        default=False,
+        help=(
+            "Enable tenancy schedule parsing mode. "
+            "This mode uses specialized parsing for real estate lease documents "
+            "with fields like Property, Tenant, Suite, Lease dates, Area, Rent, etc. "
+            "Outputs a normalized multi-column Excel file with proper data types."
+        ),
+    )
     return parser
 
 
@@ -69,6 +80,7 @@ def main(argv: list[str] | None = None) -> int:
             input_path=args.input,
             output_path=args.output,
             debug=args.debug,
+            tenancy_mode=args.tenancy_mode,
         )
         print(f"Output written to: {output}")
         return 0

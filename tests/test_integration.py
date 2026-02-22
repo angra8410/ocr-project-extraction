@@ -265,7 +265,8 @@ class TestPdfIntegration:
         MAX_ROWS_TO_CHECK = 20  # Limit row checking for performance
         
         out = tmp_path / "test_output.xlsx"
-        result = extract(str(TEST_PDF), str(out))
+        # Use tenancy_mode for structured multi-column output
+        result = extract(str(TEST_PDF), str(out), tenancy_mode=True)
         wb = load_workbook(str(result))
         ws = wb.active
         

@@ -79,6 +79,9 @@ ocr-extract photo.jpg --verbose
 
 # Enable debug mode (extra logging + annotated preview image)
 ocr-extract table.tif --debug
+
+# Tenancy schedule mode (for real estate lease documents)
+ocr-extract tenancy_schedule.pdf --tenancy-mode -o output.xlsx
 ```
 
 #### Options
@@ -91,8 +94,24 @@ options:
   -o OUTPUT          Path for the output .xlsx (default: INPUT.xlsx)
   --debug            Log detected columns/rows/merges; save INPUT.debug.png
   -v, --verbose      Enable INFO-level logging
+  --tenancy-mode     Enable specialized parsing for tenancy schedules
   -h, --help         Show this help message and exit
 ```
+
+### Tenancy Schedule Mode
+
+For real estate lease documents (tenancy schedules), use `--tenancy-mode` to get:
+- **Structured multi-column output** with 17 columns: property, tenant_name, suite, lease dates, area, rent amounts, etc.
+- **Data normalization**: Dates → ISO format (YYYY-MM-DD), Numbers → remove commas, handle negatives
+- **Warning tracking**: Ambiguous values flagged in a warnings column
+- **Guaranteed multi-column structure**: No risk of single-column dumps
+
+Example:
+```bash
+ocr-extract lease_schedule.pdf --tenancy-mode -o tenancy_output.xlsx --verbose
+```
+
+Expected columns: `property`, `as_of_date`, `tenant_name`, `legal_name`, `suite`, `lease_type`, `lease_from`, `lease_to`, `term_months`, `area_sqft`, `monthly_amount`, `annual_amount`, `security_deposit`, `loc_amount`, `notes`, `row_type`, `warnings`
 
 ### Python API
 
