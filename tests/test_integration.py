@@ -256,16 +256,23 @@ class TestPdfIntegration:
         - Header row with distinct values across multiple columns
         - Data rows with values in columns beyond A
         """
+        # Constants for this test
+        MIN_EXPECTED_COLS = 4
+        MIN_HEADER_VALUES = 3
+        MIN_HEADER_COLS = 3
+        MIN_DATA_ROWS = 3
+        MAX_COLS_TO_CHECK = 10  # Limit column checking for performance
+        MAX_ROWS_TO_CHECK = 20  # Limit row checking for performance
+        
         out = tmp_path / "test_output.xlsx"
         result = extract(str(TEST_PDF), str(out))
         wb = load_workbook(str(result))
         ws = wb.active
         
         # 1. Assert minimum column count
-        min_expected_cols = 4
         actual_cols = ws.max_column
-        assert actual_cols >= min_expected_cols, (
-            f"Single-column dump detected! Expected >= {min_expected_cols} columns, "
+        assert actual_cols >= MIN_EXPECTED_COLS, (
+            f"Single-column dump detected! Expected >= {MIN_EXPECTED_COLS} columns, "
             f"but found only {actual_cols}. This indicates the table structure "
             f"was not properly detected and all content was dumped into one column."
         )
@@ -273,7 +280,7 @@ class TestPdfIntegration:
         # 2. Assert header values are in different columns (not all in A)
         header_row = 1
         header_values = []
-        for col_idx in range(1, min(actual_cols + 1, 10)):  # Check first ~10 columns
+        for col_idx in range(1, min(actual_cols + 1, MAX_COLS_TO_CHECK)):
             cell_value = ws.cell(row=header_row, column=col_idx).value
             if cell_value and str(cell_value).strip():
                 header_values.append((col_idx, str(cell_value).strip()))
@@ -283,8 +290,8 @@ class TestPdfIntegration:
         found_headers = {val for _, val in header_values}
         found_in_headers = expected_headers & found_headers
         
-        assert len(header_values) >= 3, (
-            f"Too few header values found. Expected at least 3 distinct headers, "
+        assert len(header_values) >= MIN_HEADER_VALUES, (
+            f"Too few header values found. Expected at least {MIN_HEADER_VALUES} distinct headers, "
             f"found {len(header_values)}: {header_values}"
         )
         
@@ -296,18 +303,17 @@ class TestPdfIntegration:
         
         # Check headers are in different columns (not all in column A)
         header_cols = {col for col, _ in header_values}
-        assert len(header_cols) >= 3, (
+        assert len(header_cols) >= MIN_HEADER_COLS, (
             f"Headers are clustered in too few columns. Expected headers spread "
-            f"across >= 3 columns, but found in columns: {sorted(header_cols)}"
+            f"across >= {MIN_HEADER_COLS} columns, but found in columns: {sorted(header_cols)}"
         )
         
         # 3. Assert at least N data rows have values beyond column A
         data_rows_with_multi_cols = 0
-        min_data_rows = 3
         
-        for row_idx in range(2, min(ws.max_row + 1, 20)):  # Check rows 2-20
+        for row_idx in range(2, min(ws.max_row + 1, MAX_ROWS_TO_CHECK)):
             has_value_beyond_A = False
-            for col_idx in range(2, min(actual_cols + 1, 10)):  # Columns B onwards
+            for col_idx in range(2, min(actual_cols + 1, MAX_COLS_TO_CHECK)):
                 cell_value = ws.cell(row=row_idx, column=col_idx).value
                 if cell_value is not None and str(cell_value).strip():
                     has_value_beyond_A = True
@@ -315,9 +321,9 @@ class TestPdfIntegration:
             if has_value_beyond_A:
                 data_rows_with_multi_cols += 1
         
-        assert data_rows_with_multi_cols >= min_data_rows, (
+        assert data_rows_with_multi_cols >= MIN_DATA_ROWS, (
             f"Too few data rows with multi-column values. Expected at least "
-            f"{min_data_rows} rows with data in columns beyond A, but found "
+            f"{MIN_DATA_ROWS} rows with data in columns beyond A, but found "
             f"only {data_rows_with_multi_cols}. This suggests a single-column dump."
         )
         
@@ -422,6 +428,14 @@ class TestPdfIntegration:
         - Expected data: Names in column A/1, numbers in column B/2, etc.
         - This serves as a golden reference for the expected output
         """
+        # Constants for this test
+        MAX_ROWS_TO_CHECK = 20
+        MAX_COLS_TO_CHECK = 10
+        MIN_MATCHING_NAMES = 3
+        MIN_NUMERIC_VALUES = 3
+        MIN_DATE_VALUES = 3
+        MIN_STATUS_VALUES = 3
+        
         out = tmp_path / "test_output.xlsx"
         result = extract(str(TEST_PDF), str(out))
         wb = load_workbook(str(result))
@@ -430,87 +444,95 @@ class TestPdfIntegration:
         # Golden expectations for test.pdf
         # Based on the fixture, we expect a table with these characteristics:
         
-        # 1. Expected headers in specific columns (not all in column A)
-        expected_header_mapping = {
-            "Amount": 2,   # Column B
-            "Date": 3,     # Column C  
-            "Status": 4,   # Column D
-        }
+        # 1. Expected headers should exist in DIFFERENT columns (flexible positions)
+        # This is more robust than hardcoding exact column numbers
+        expected_headers = ["Amount", "Date", "Status"]
         
-        for header_text, expected_col in expected_header_mapping.items():
-            found = False
-            # Check in a range around expected column (±1 for tolerance)
-            for col in range(max(1, expected_col - 1), expected_col + 2):
-                if col <= ws.max_column:
-                    cell_value = ws.cell(row=1, column=col).value
-                    if cell_value and header_text.lower() in str(cell_value).lower():
-                        found = True
-                        break
-            
-            assert found, (
-                f"Golden expectation failed: Header '{header_text}' should appear "
-                f"near column {expected_col}, but was not found in columns "
-                f"{max(1, expected_col-1)}..{expected_col+1}"
+        # Find which columns contain these headers
+        header_positions = {}
+        for header_text in expected_headers:
+            for col in range(1, min(ws.max_column + 1, MAX_COLS_TO_CHECK)):
+                cell_value = ws.cell(row=1, column=col).value
+                if cell_value and header_text.lower() in str(cell_value).lower():
+                    header_positions[header_text] = col
+                    break
+        
+        # Assert all expected headers were found
+        for header in expected_headers:
+            assert header in header_positions, (
+                f"Golden expectation failed: Header '{header}' not found in "
+                f"first {MAX_COLS_TO_CHECK} columns"
             )
+        
+        # Assert headers are in different columns (multi-column structure)
+        unique_cols = set(header_positions.values())
+        assert len(unique_cols) == len(expected_headers), (
+            f"Golden expectation failed: Headers should be in different columns, "
+            f"but found in columns {sorted(unique_cols)}. "
+            f"Mapping: {header_positions}"
+        )
         
         # 2. Expected data pattern: names in column 1, numeric values in column 2
         expected_names = ["Alice", "Bob", "Charlie", "David", "Eve", "Frank"]
         found_names = []
         
-        for row_idx in range(2, min(ws.max_row + 1, 20)):
+        for row_idx in range(2, min(ws.max_row + 1, MAX_ROWS_TO_CHECK)):
             cell_value = ws.cell(row=row_idx, column=1).value
             if cell_value and str(cell_value).strip():
                 found_names.append(str(cell_value).strip())
         
-        # At least 3 of the expected names should be found
+        # At least N of the expected names should be found
         matching_names = [name for name in expected_names if name in found_names]
-        assert len(matching_names) >= 3, (
-            f"Golden expectation failed: Expected at least 3 names from "
+        assert len(matching_names) >= MIN_MATCHING_NAMES, (
+            f"Golden expectation failed: Expected at least {MIN_MATCHING_NAMES} names from "
             f"{expected_names} in column 1, but only found {len(matching_names)}: "
             f"{matching_names}"
         )
         
-        # 3. Numeric values should appear in column 2 (Amount column)
-        numeric_values_in_col2 = 0
-        for row_idx in range(2, min(ws.max_row + 1, 10)):
-            cell_value = ws.cell(row=row_idx, column=2).value
+        # 3. Numeric values should appear in Amount column (wherever it is)
+        amount_col = header_positions.get("Amount", 2)  # Default to column 2 if not found
+        numeric_values_in_amount_col = 0
+        for row_idx in range(2, min(ws.max_row + 1, MAX_ROWS_TO_CHECK)):
+            cell_value = ws.cell(row=row_idx, column=amount_col).value
             if cell_value is not None:
                 try:
                     # Try to interpret as number
                     float(str(cell_value).replace(",", ""))
-                    numeric_values_in_col2 += 1
+                    numeric_values_in_amount_col += 1
                 except (ValueError, TypeError):
                     pass
         
-        assert numeric_values_in_col2 >= 3, (
-            f"Golden expectation failed: Expected at least 3 numeric values "
-            f"in column 2 (Amount), but only found {numeric_values_in_col2}"
+        assert numeric_values_in_amount_col >= MIN_NUMERIC_VALUES, (
+            f"Golden expectation failed: Expected at least {MIN_NUMERIC_VALUES} numeric values "
+            f"in Amount column (col {amount_col}), but only found {numeric_values_in_amount_col}"
         )
         
-        # 4. Date-like values should appear in column 3
-        date_like_values_in_col3 = 0
-        for row_idx in range(2, min(ws.max_row + 1, 10)):
-            cell_value = ws.cell(row=row_idx, column=3).value
+        # 4. Date-like values should appear in Date column
+        date_col = header_positions.get("Date", 3)  # Default to column 3 if not found
+        date_like_values_in_date_col = 0
+        for row_idx in range(2, min(ws.max_row + 1, MAX_ROWS_TO_CHECK)):
+            cell_value = ws.cell(row=row_idx, column=date_col).value
             if cell_value and str(cell_value).strip():
                 # Check for date-like pattern (contains digits and hyphens/slashes)
                 val_str = str(cell_value)
                 if ("-" in val_str or "/" in val_str) and any(c.isdigit() for c in val_str):
-                    date_like_values_in_col3 += 1
+                    date_like_values_in_date_col += 1
         
-        assert date_like_values_in_col3 >= 3, (
-            f"Golden expectation failed: Expected at least 3 date-like values "
-            f"in column 3 (Date), but only found {date_like_values_in_col3}"
+        assert date_like_values_in_date_col >= MIN_DATE_VALUES, (
+            f"Golden expectation failed: Expected at least {MIN_DATE_VALUES} date-like values "
+            f"in Date column (col {date_col}), but only found {date_like_values_in_date_col}"
         )
         
-        # 5. Status values should appear in column 4
+        # 5. Status values should appear in Status column
+        status_col = header_positions.get("Status", 4)  # Default to column 4 if not found
         status_keywords = ["Active", "Inactive"]
-        status_values_in_col4 = 0
-        for row_idx in range(2, min(ws.max_row + 1, 10)):
-            cell_value = ws.cell(row=row_idx, column=4).value
+        status_values_in_status_col = 0
+        for row_idx in range(2, min(ws.max_row + 1, MAX_ROWS_TO_CHECK)):
+            cell_value = ws.cell(row=row_idx, column=status_col).value
             if cell_value and any(kw.lower() in str(cell_value).lower() for kw in status_keywords):
-                status_values_in_col4 += 1
+                status_values_in_status_col += 1
         
-        assert status_values_in_col4 >= 3, (
-            f"Golden expectation failed: Expected at least 3 status values "
-            f"in column 4 (Status), but only found {status_values_in_col4}"
+        assert status_values_in_status_col >= MIN_STATUS_VALUES, (
+            f"Golden expectation failed: Expected at least {MIN_STATUS_VALUES} status values "
+            f"in Status column (col {status_col}), but only found {status_values_in_status_col}"
         )

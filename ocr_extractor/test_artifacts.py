@@ -19,6 +19,10 @@ from .table_detector import TableGrid
 
 logger = logging.getLogger(__name__)
 
+# Constants for artifact generation
+MAX_COLUMNS_TO_ANALYZE = 20  # Limit column analysis for performance and clarity
+MAX_ROWS_TO_ANALYZE = 100    # Limit row analysis for performance
+
 
 # ---------------------------------------------------------------------------
 # Table Preview HTML
@@ -168,9 +172,11 @@ def generate_layout_overlay(
         for y in sorted(y_positions)[:20]:  # Limit to first 20 to avoid clutter
             cv2.line(arr, (0, y), (arr.shape[1], y), (255, 255, 0), 1)  # Cyan
     
-    # Add legend
+    # Add legend with shadow effect for better visibility
     legend_y = 30
+    # Draw shadow first (white background)
     cv2.putText(arr, "Legend:", (10, legend_y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+    # Draw foreground text (black) - creates a shadow/outline effect for visibility
     cv2.putText(arr, "Legend:", (10, legend_y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 1)
     legend_y += 30
     
@@ -218,20 +224,20 @@ def generate_assertions_report(
     num_rows = ws.max_row
     num_cols = ws.max_column
     
-    # Count populated cells per column
+    # Count populated cells per column (limit to MAX_COLUMNS_TO_ANALYZE for performance)
     col_populations = {}
-    for col_idx in range(1, min(num_cols + 1, 20)):
+    for col_idx in range(1, min(num_cols + 1, MAX_COLUMNS_TO_ANALYZE)):
         populated = 0
-        for row_idx in range(1, min(num_rows + 1, 100)):
+        for row_idx in range(1, min(num_rows + 1, MAX_ROWS_TO_ANALYZE)):
             cell_value = ws.cell(row=row_idx, column=col_idx).value
             if cell_value is not None and str(cell_value).strip():
                 populated += 1
         col_populations[col_idx] = populated
     
-    # Collect header values
+    # Collect header values (limit to MAX_COLUMNS_TO_ANALYZE)
     header_row = 1
     header_values = []
-    for col_idx in range(1, min(num_cols + 1, 20)):
+    for col_idx in range(1, min(num_cols + 1, MAX_COLUMNS_TO_ANALYZE)):
         cell_value = ws.cell(row=header_row, column=col_idx).value
         if cell_value and str(cell_value).strip():
             header_values.append(f"Column {col_idx}: '{cell_value}'")
@@ -239,11 +245,11 @@ def generate_assertions_report(
     # Check for merged cells
     merged_ranges = list(ws.merged_cells.ranges) if hasattr(ws, 'merged_cells') else []
     
-    # Count data rows with multi-column values
+    # Count data rows with multi-column values (limit to MAX_ROWS_TO_ANALYZE)
     data_rows_with_multi_cols = 0
-    for row_idx in range(2, min(num_rows + 1, 100)):
+    for row_idx in range(2, min(num_rows + 1, MAX_ROWS_TO_ANALYZE)):
         has_value_beyond_A = False
-        for col_idx in range(2, min(num_cols + 1, 20)):
+        for col_idx in range(2, min(num_cols + 1, MAX_COLUMNS_TO_ANALYZE)):
             cell_value = ws.cell(row=row_idx, column=col_idx).value
             if cell_value is not None and str(cell_value).strip():
                 has_value_beyond_A = True
