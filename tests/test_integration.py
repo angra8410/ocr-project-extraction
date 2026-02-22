@@ -6,6 +6,7 @@ that the output .xlsx has the expected structure and content.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,8 @@ from openpyxl import load_workbook
 from PIL import Image, ImageDraw
 
 from ocr_extractor.extractor import extract
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -241,3 +244,172 @@ class TestPdfIntegration:
         debug_dir = tmp_path / "test_output.debug"
         assert debug_dir.exists()
         assert not debug_dir.is_relative_to(FIXTURES_DIR)
+
+    def test_pdf_multi_column_structure(self, tmp_path):
+        """The output must have multi-column structure, NOT a single-column dump.
+        
+        This test fails if the extraction produces a single-column output where
+        all data is dumped into column A (the "paragraph dump" problem).
+        
+        For tests/fixtures/test.pdf, we expect:
+        - At least 4 columns (header: Amount, Date, Status + name column)
+        - Header row with distinct values across multiple columns
+        - Data rows with values in columns beyond A
+        """
+        out = tmp_path / "test_output.xlsx"
+        result = extract(str(TEST_PDF), str(out))
+        wb = load_workbook(str(result))
+        ws = wb.active
+        
+        # 1. Assert minimum column count
+        min_expected_cols = 4
+        actual_cols = ws.max_column
+        assert actual_cols >= min_expected_cols, (
+            f"Single-column dump detected! Expected >= {min_expected_cols} columns, "
+            f"but found only {actual_cols}. This indicates the table structure "
+            f"was not properly detected and all content was dumped into one column."
+        )
+        
+        # 2. Assert header values are in different columns (not all in A)
+        header_row = 1
+        header_values = []
+        for col_idx in range(1, min(actual_cols + 1, 10)):  # Check first ~10 columns
+            cell_value = ws.cell(row=header_row, column=col_idx).value
+            if cell_value and str(cell_value).strip():
+                header_values.append((col_idx, str(cell_value).strip()))
+        
+        # We expect headers like "Amount", "Date", "Status" in different columns
+        expected_headers = {"Amount", "Date", "Status"}
+        found_headers = {val for _, val in header_values}
+        found_in_headers = expected_headers & found_headers
+        
+        assert len(header_values) >= 3, (
+            f"Too few header values found. Expected at least 3 distinct headers, "
+            f"found {len(header_values)}: {header_values}"
+        )
+        
+        assert len(found_in_headers) >= 2, (
+            f"Expected header keywords not found in correct positions. "
+            f"Expected at least 2 of {expected_headers}, found {found_in_headers}. "
+            f"All headers: {header_values}"
+        )
+        
+        # Check headers are in different columns (not all in column A)
+        header_cols = {col for col, _ in header_values}
+        assert len(header_cols) >= 3, (
+            f"Headers are clustered in too few columns. Expected headers spread "
+            f"across >= 3 columns, but found in columns: {sorted(header_cols)}"
+        )
+        
+        # 3. Assert at least N data rows have values beyond column A
+        data_rows_with_multi_cols = 0
+        min_data_rows = 3
+        
+        for row_idx in range(2, min(ws.max_row + 1, 20)):  # Check rows 2-20
+            has_value_beyond_A = False
+            for col_idx in range(2, min(actual_cols + 1, 10)):  # Columns B onwards
+                cell_value = ws.cell(row=row_idx, column=col_idx).value
+                if cell_value is not None and str(cell_value).strip():
+                    has_value_beyond_A = True
+                    break
+            if has_value_beyond_A:
+                data_rows_with_multi_cols += 1
+        
+        assert data_rows_with_multi_cols >= min_data_rows, (
+            f"Too few data rows with multi-column values. Expected at least "
+            f"{min_data_rows} rows with data in columns beyond A, but found "
+            f"only {data_rows_with_multi_cols}. This suggests a single-column dump."
+        )
+        
+        # 4. Check for expected merged cells (optional - test.pdf may not have merges)
+        # For now, just document that we're not asserting merged cells
+        merged_ranges = list(ws.merged_cells.ranges) if hasattr(ws, 'merged_cells') else []
+        # Note: Not asserting merged cells for this fixture as it may not have them
+
+    def test_pdf_generates_visual_artifacts(self, tmp_path):
+        """Generate visual artifacts for debugging and verification.
+        
+        This test produces:
+        - table_preview.html: Visual grid representation with styling
+        - layout_overlay.png: Annotated image showing detected structure
+        - test_assertions_report.md: Detailed explanation of what was checked
+        
+        These artifacts help verify that multi-column structure is preserved
+        and provide visual evidence for code review.
+        """
+        from ocr_extractor.test_artifacts import (
+            generate_assertions_report,
+            generate_layout_overlay,
+            generate_table_preview_html,
+        )
+        from ocr_extractor.preprocessor import preprocess
+        from ocr_extractor.table_detector import detect_table, detect_merges
+        from pdf2image import convert_from_path
+        import cv2
+        import numpy as np
+        
+        # Extract to Excel
+        out = tmp_path / "test_output.xlsx"
+        result = extract(str(TEST_PDF), str(out), debug=False)
+        
+        # Also get the image and grid for layout overlay
+        images = convert_from_path(str(TEST_PDF), dpi=200)
+        clean = preprocess(images[0], debug=False)
+        
+        # Detect table structure
+        arr = cv2.cvtColor(np.array(clean.convert("RGB")), cv2.COLOR_RGB2BGR)
+        gray = cv2.cvtColor(arr, cv2.COLOR_BGR2GRAY)
+        _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        
+        from ocr_extractor.table_detector import _detect_ruling_lines, _grid_from_lines
+        h_lines, v_lines = _detect_ruling_lines(binary, debug=False)
+        if h_lines is not None and v_lines is not None:
+            grid = _grid_from_lines(h_lines, v_lines, gray.shape, debug=False)
+        else:
+            grid = detect_table(clean, debug=False)
+        
+        grid = detect_merges(clean, grid, debug=False)
+        
+        # Generate artifacts
+        artifacts_dir = tmp_path / "test_artifacts"
+        artifacts_dir.mkdir(exist_ok=True)
+        
+        # 1. Table preview HTML
+        preview_html = artifacts_dir / "table_preview.html"
+        generate_table_preview_html(
+            xlsx_path=Path(result),
+            output_path=preview_html,
+            max_rows=30,
+            max_cols=15,
+        )
+        assert preview_html.exists(), "table_preview.html not generated"
+        
+        # 2. Layout overlay PNG
+        overlay_png = artifacts_dir / "layout_overlay.png"
+        generate_layout_overlay(
+            source_image=clean,
+            grid=grid,
+            output_path=overlay_png,
+        )
+        assert overlay_png.exists(), "layout_overlay.png not generated"
+        
+        # 3. Test assertions report
+        report_md = artifacts_dir / "test_assertions_report.md"
+        generate_assertions_report(
+            xlsx_path=Path(result),
+            output_path=report_md,
+            test_name="PDF Multi-Column Structure Test",
+        )
+        assert report_md.exists(), "test_assertions_report.md not generated"
+        
+        # Verify content of report
+        report_content = report_md.read_text(encoding="utf-8")
+        assert "Column Structure Analysis" in report_content
+        assert "Header Row Analysis" in report_content
+        assert "Data Row Analysis" in report_content
+        
+        # Log locations for user
+        logger.info("Visual artifacts generated:")
+        logger.info("  - %s", preview_html)
+        logger.info("  - %s", overlay_png)
+        logger.info("  - %s", report_md)
