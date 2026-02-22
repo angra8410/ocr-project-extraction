@@ -12,12 +12,18 @@ from openpyxl import load_workbook
 from ocr_extractor.table_detector import CellRegion, TableGrid
 from ocr_extractor.tenancy_parser import (
     HTML_SCHEMA_COLUMNS,
+    ROW_TYPE_CHARGE_SCHEDULE,
+    ROW_TYPE_LEASE_SUMMARY,
+    ROW_TYPE_OCCUPANCY_SUMMARY,
+    ROW_TYPE_RENT_STEP,
     TenancyRow,
     export_tenancy_to_excel,
     export_tenancy_to_html,
     normalize_date,
     normalize_number,
     parse_grid_to_rows,
+    _detect_section_type,
+    _extract_property_as_of_date,
 )
 
 
@@ -570,3 +576,179 @@ class TestExportTenancyToHtml:
         html_table = result["html_table"]
         assert "rent_step" in html_table
         assert "charge_schedule" in html_table
+
+
+class TestDetectSectionType:
+    """Test section-header detection for row_type assignment."""
+
+    def test_rent_steps_header(self):
+        assert _detect_section_type("Rent Steps") == ROW_TYPE_RENT_STEP
+
+    def test_rent_steps_case_insensitive(self):
+        assert _detect_section_type("RENT STEPS") == ROW_TYPE_RENT_STEP
+        assert _detect_section_type("rent steps") == ROW_TYPE_RENT_STEP
+
+    def test_rent_step_singular(self):
+        assert _detect_section_type("Rent Step") == ROW_TYPE_RENT_STEP
+
+    def test_rent_steps_with_noise(self):
+        assert _detect_section_type("  Rent  Steps  ") == ROW_TYPE_RENT_STEP
+
+    def test_charge_schedule_header(self):
+        assert _detect_section_type("Charge Schedule") == ROW_TYPE_CHARGE_SCHEDULE
+
+    def test_charge_schedules_plural(self):
+        assert _detect_section_type("Charge Schedules") == ROW_TYPE_CHARGE_SCHEDULE
+
+    def test_charge_schedule_case_insensitive(self):
+        assert _detect_section_type("CHARGE SCHEDULE") == ROW_TYPE_CHARGE_SCHEDULE
+
+    def test_occupancy_summary_header(self):
+        assert _detect_section_type("Occupancy Summary") == ROW_TYPE_OCCUPANCY_SUMMARY
+
+    def test_occupancy_summary_case_insensitive(self):
+        assert _detect_section_type("OCCUPANCY SUMMARY") == ROW_TYPE_OCCUPANCY_SUMMARY
+
+    def test_regular_data_row_returns_none(self):
+        assert _detect_section_type("Horizon Builders, LLC") is None
+        assert _detect_section_type("4/1/2022 3/30/2027 94940.00") is None
+
+    def test_empty_string_returns_none(self):
+        assert _detect_section_type("") is None
+
+    def test_none_returns_none(self):
+        assert _detect_section_type(None) is None
+
+
+class TestExtractPropertyAsOfDate:
+    """Test property name and as-of date extraction from document headers."""
+
+    def test_extract_property_and_date(self):
+        prop, aod = _extract_property_as_of_date(
+            "Tenancy Schedule I Property: Cornet Axol Date: 09/30/2024"
+        )
+        assert prop == "Cornet Axol"
+        assert aod == "2024-09-30"
+
+    def test_extract_property_only(self):
+        prop, aod = _extract_property_as_of_date("Property: Some Building Name")
+        assert prop == "Some Building Name"
+        assert aod is None
+
+    def test_extract_date_only(self):
+        prop, aod = _extract_property_as_of_date("As of: 2024-09-30")
+        assert prop is None
+        assert aod == "2024-09-30"
+
+    def test_as_of_keyword(self):
+        prop, aod = _extract_property_as_of_date(
+            "Property: Test Corp As of: 01/15/2024"
+        )
+        assert prop == "Test Corp"
+        assert aod == "2024-01-15"
+
+    def test_empty_string(self):
+        prop, aod = _extract_property_as_of_date("")
+        assert prop is None
+        assert aod is None
+
+    def test_no_property_or_date(self):
+        prop, aod = _extract_property_as_of_date("Horizon Builders 94940.00")
+        assert prop is None
+        assert aod is None
+
+
+class TestParseGridRowTypeDetection:
+    """Test that parse_grid_to_rows correctly assigns row_type from section headers."""
+
+    def _make_section_grid(self) -> TableGrid:
+        """Create a grid that simulates a tenancy schedule with multiple sections."""
+        cells = [
+            # Document header (row 0)
+            CellRegion(row=0, col=0, text="Property: Test Plaza Date: 01/15/2024"),
+            # Column headers (row 1)
+            CellRegion(row=1, col=0, text="Tenant"),
+            CellRegion(row=1, col=1, text="Suite"),
+            CellRegion(row=1, col=2, text="Monthly"),
+            CellRegion(row=1, col=3, text="Annual"),
+            # Lease summary data (row 2)
+            CellRegion(row=2, col=0, text="ABC Corp"),
+            CellRegion(row=2, col=1, text="101"),
+            CellRegion(row=2, col=2, text="1000.00"),
+            CellRegion(row=2, col=3, text="12000.00"),
+            # Rent Steps section header (row 3)
+            CellRegion(row=3, col=0, text="Rent Steps"),
+            # Rent step data (row 4)
+            CellRegion(row=4, col=0, text="ABC Corp"),
+            CellRegion(row=4, col=1, text="101"),
+            CellRegion(row=4, col=2, text="1000.00"),
+            CellRegion(row=4, col=3, text="12000.00"),
+            # Charge Schedule section header (row 5)
+            CellRegion(row=5, col=0, text="Charge Schedule"),
+            # Charge schedule data (row 6)
+            CellRegion(row=6, col=0, text="ABC Corp"),
+            CellRegion(row=6, col=1, text="101"),
+            CellRegion(row=6, col=2, text="50.00"),
+            CellRegion(row=6, col=3, text="600.00"),
+            # Occupancy Summary section header (row 7)
+            CellRegion(row=7, col=0, text="Occupancy Summary"),
+            # Occupancy data (row 8)
+            CellRegion(row=8, col=0, text="OCCUPIED_TOTAL"),
+            CellRegion(row=8, col=1, text="101"),
+            CellRegion(row=8, col=2, text="500.00"),
+            CellRegion(row=8, col=3, text="6000.00"),
+        ]
+        return TableGrid(cells=cells, header_rows=2)
+
+    def test_lease_summary_rows(self):
+        grid = self._make_section_grid()
+        rows = parse_grid_to_rows(grid)
+        lease_rows = [r for r in rows if r.row_type == ROW_TYPE_LEASE_SUMMARY]
+        assert len(lease_rows) >= 1
+
+    def test_rent_step_rows(self):
+        grid = self._make_section_grid()
+        rows = parse_grid_to_rows(grid)
+        rent_rows = [r for r in rows if r.row_type == ROW_TYPE_RENT_STEP]
+        assert len(rent_rows) >= 1
+
+    def test_charge_schedule_rows(self):
+        grid = self._make_section_grid()
+        rows = parse_grid_to_rows(grid)
+        charge_rows = [r for r in rows if r.row_type == ROW_TYPE_CHARGE_SCHEDULE]
+        assert len(charge_rows) >= 1
+
+    def test_occupancy_summary_rows(self):
+        grid = self._make_section_grid()
+        rows = parse_grid_to_rows(grid)
+        occ_rows = [r for r in rows if r.row_type == ROW_TYPE_OCCUPANCY_SUMMARY]
+        assert len(occ_rows) >= 1
+
+    def test_all_four_row_types_present(self):
+        grid = self._make_section_grid()
+        rows = parse_grid_to_rows(grid)
+        types = {r.row_type for r in rows}
+        assert ROW_TYPE_LEASE_SUMMARY in types
+        assert ROW_TYPE_RENT_STEP in types
+        assert ROW_TYPE_CHARGE_SCHEDULE in types
+        assert ROW_TYPE_OCCUPANCY_SUMMARY in types
+
+    def test_property_propagated_from_header(self):
+        grid = self._make_section_grid()
+        rows = parse_grid_to_rows(grid)
+        # All rows should have property set (propagated from doc header)
+        assert all(r.property == "Test Plaza" for r in rows)
+
+    def test_as_of_date_propagated_from_header(self):
+        grid = self._make_section_grid()
+        rows = parse_grid_to_rows(grid)
+        # All rows should have as_of_date set (propagated from doc header)
+        assert all(r.as_of_date == "2024-01-15" for r in rows)
+
+    def test_section_header_rows_not_included_in_output(self):
+        """Section header rows (Rent Steps etc.) must not appear as data rows."""
+        grid = self._make_section_grid()
+        rows = parse_grid_to_rows(grid)
+        for row in rows:
+            # tenant_name should never be the section header text
+            assert row.tenant_name not in ("Rent Steps", "Charge Schedule", "Occupancy Summary")
