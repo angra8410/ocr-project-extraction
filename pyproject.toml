@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ocr-extractor"
+version = "0.1.0"
+description = "OCR + table-structure reconstruction: convert images/PDFs to .xlsx"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "pytesseract>=0.3.10",
+    "pdfplumber>=0.9.0",
+    "pdf2image>=1.16.0",
+    "openpyxl>=3.1.0",
+    "Pillow>=10.0.0",
+    "opencv-python-headless>=4.7.0",
+    "numpy>=1.24.0",
+]
+
+[project.scripts]
+ocr-extract = "ocr_extractor.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["ocr_extractor*"]
