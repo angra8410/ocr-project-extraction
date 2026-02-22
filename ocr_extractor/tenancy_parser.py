@@ -26,10 +26,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-import pandas as pd
-from openpyxl import Workbook
-from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
-from openpyxl.utils import get_column_letter
 
 from .table_detector import TableGrid
 
@@ -89,18 +85,6 @@ ROW_TYPE_RENT_STEP = "rent_step"
 ROW_TYPE_CHARGE_SCHEDULE = "charge_schedule"
 ROW_TYPE_OCCUPANCY_SUMMARY = "occupancy_summary"
 ROW_TYPE_HEADER = "header"
-
-# Numeric columns used for right-alignment in Excel output
-_NUMERIC_EXCEL_COLUMNS = frozenset([
-    "term_months",
-    "area_sqft",
-    "monthly_amount",
-    "annual_amount",
-    "management_fee_rate",
-    "security_deposit",
-    "loc_amount",
-])
-
 
 # ---------------------------------------------------------------------------
 # Data Models
@@ -634,122 +618,6 @@ def _has_meaningful_data(row: TenancyRow) -> bool:
         row.monthly_amount,
         row.annual_amount,
     ])
-
-
-# ---------------------------------------------------------------------------
-# Excel Export with Multi-Column Guarantee
-# ---------------------------------------------------------------------------
-
-
-def export_tenancy_to_excel(
-    rows: list[TenancyRow],
-    output_path: str | Path,
-    include_warnings: bool = True,
-) -> Path:
-    """Export tenancy rows to Excel with guaranteed multi-column structure.
-
-    This function ensures that the output Excel file has:
-    - Multiple columns with clear headers
-    - Proper data types (numbers as numbers, dates as dates)
-    - No single-column dumps
-
-    Args:
-        rows: List of TenancyRow objects
-        output_path: Path to output .xlsx file
-        include_warnings: Whether to include the warnings column
-
-    Returns:
-        Path to the created Excel file
-    """
-    output_path = Path(output_path)
-
-    # Convert rows to dictionaries
-    data = [row.to_dict() for row in rows]
-
-    # Create DataFrame with explicit column order
-    columns = TENANCY_SCHEDULE_COLUMNS.copy()
-    if not include_warnings:
-        columns.remove("warnings")
-
-    df = pd.DataFrame(data, columns=columns)
-
-    # Create workbook manually with openpyxl for better formatting control
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Tenancy Schedule"
-
-    # Write headers
-    _THIN = Side(border_style="thin", color="000000")
-    _BORDER = Border(left=_THIN, right=_THIN, top=_THIN, bottom=_THIN)
-    _HEADER_FILL = PatternFill(fill_type="solid", fgColor="D9E1F2")
-    _HEADER_FONT = Font(bold=True)
-
-    for col_idx, col_name in enumerate(columns, start=1):
-        cell = ws.cell(row=1, column=col_idx)
-        cell.value = col_name
-        cell.font = _HEADER_FONT
-        cell.fill = _HEADER_FILL
-        cell.border = _BORDER
-        cell.alignment = Alignment(wrap_text=True, vertical="top", horizontal="center")
-
-    # Write data rows
-    for row_idx, row_data in enumerate(data, start=2):
-        for col_idx, col_name in enumerate(columns, start=1):
-            cell = ws.cell(row=row_idx, column=col_idx)
-            value = row_data.get(col_name)
-
-            # Write value with appropriate type
-            if value is not None:
-                cell.value = value
-            else:
-                cell.value = ""
-
-            cell.border = _BORDER
-
-            # Right-align numeric columns
-            if col_name in _NUMERIC_EXCEL_COLUMNS:
-                cell.alignment = Alignment(horizontal="right", vertical="top")
-            else:
-                cell.alignment = Alignment(wrap_text=True, vertical="top")
-
-    # Set column widths
-    column_widths = {
-        "property": 20,
-        "as_of_date": 12,
-        "tenant_name": 25,
-        "legal_name": 25,
-        "suite": 10,
-        "lease_type": 12,
-        "lease_from": 12,
-        "lease_to": 12,
-        "term_months": 10,
-        "area_sqft": 12,
-        "charge_label": 12,
-        "period_from": 12,
-        "period_to": 12,
-        "monthly_amount": 15,
-        "annual_amount": 15,
-        "management_fee_rate": 18,
-        "security_deposit": 15,
-        "loc_amount": 15,
-        "notes": 30,
-        "row_type": 15,
-        "warnings": 40,
-    }
-
-    for col_idx, col_name in enumerate(columns, start=1):
-        col_letter = get_column_letter(col_idx)
-        ws.column_dimensions[col_letter].width = column_widths.get(col_name, 15)
-
-    # Freeze header row
-    ws.freeze_panes = ws.cell(row=2, column=1)
-
-    # Save workbook
-    wb.save(output_path)
-    logger.info("Wrote tenancy schedule to %s (%d rows, %d columns)",
-                output_path, len(rows), len(columns))
-
-    return output_path.resolve()
 
 
 # ---------------------------------------------------------------------------

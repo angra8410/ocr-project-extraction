@@ -1,7 +1,7 @@
 """OCR + table-structure reconstruction package.
 
 Converts .jpg/.jpeg/.png/.tif/.tiff and PDF files into a
-layout-preserving .xlsx that mimics jpgtoexcel.com output.
+layout-preserving HTML table.
 """
 
 from .extractor import extract  # noqa: F401
