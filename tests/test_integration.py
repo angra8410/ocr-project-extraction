@@ -251,17 +251,17 @@ class TestPdfIntegration:
         This test fails if the extraction produces a single-column output where
         all data is dumped into column A (the "paragraph dump" problem).
         
-        For tests/fixtures/test.pdf, we expect:
-        - At least 4 columns (header: Amount, Date, Status + name column)
-        - Header row with distinct values across multiple columns
-        - Data rows with values in columns beyond A
+        For tests/fixtures/test.pdf (real estate lease table), we expect:
+        - At least 15 columns (17-column real estate lease data structure)
+        - Header row with real estate column names (Property, Lease, Area, etc.)
+        - Data rows with values in multiple columns
         """
-        # Constants for this test
-        MIN_EXPECTED_COLS = 4
-        MIN_HEADER_VALUES = 3
-        MIN_HEADER_COLS = 3
-        MIN_DATA_ROWS = 3
-        MAX_COLS_TO_CHECK = 10  # Limit column checking for performance
+        # Constants for this test - updated for 17-column real estate table
+        MIN_EXPECTED_COLS = 15  # At least 15 of the 17 columns
+        MIN_HEADER_VALUES = 8  # At least 8 distinct headers
+        MIN_HEADER_COLS = 8    # Headers spread across at least 8 columns
+        MIN_DATA_ROWS = 2      # At least 2 data rows with multi-column values
+        MAX_COLS_TO_CHECK = 20  # Check up to 20 columns
         MAX_ROWS_TO_CHECK = 20  # Limit row checking for performance
         
         out = tmp_path / "test_output.xlsx"
@@ -269,12 +269,12 @@ class TestPdfIntegration:
         wb = load_workbook(str(result))
         ws = wb.active
         
-        # 1. Assert minimum column count
+        # 1. Assert minimum column count for real estate table
         actual_cols = ws.max_column
         assert actual_cols >= MIN_EXPECTED_COLS, (
-            f"Single-column dump detected! Expected >= {MIN_EXPECTED_COLS} columns, "
-            f"but found only {actual_cols}. This indicates the table structure "
-            f"was not properly detected and all content was dumped into one column."
+            f"Insufficient columns detected! Expected >= {MIN_EXPECTED_COLS} columns "
+            f"for 17-column real estate table, but found only {actual_cols}. "
+            f"This indicates the table structure was not properly detected."
         )
         
         # 2. Assert header values are in different columns (not all in A)
@@ -285,20 +285,23 @@ class TestPdfIntegration:
             if cell_value and str(cell_value).strip():
                 header_values.append((col_idx, str(cell_value).strip()))
         
-        # We expect headers like "Amount", "Date", "Status" in different columns
-        expected_headers = {"Amount", "Date", "Status"}
-        found_headers = {val for _, val in header_values}
-        found_in_headers = expected_headers & found_headers
+        # We expect real estate headers like "Property", "Lease", "Area", etc.
+        expected_keywords = {"Property", "Lease", "Area", "Rent", "Annual", "Security"}
+        found_keywords = set()
+        for _, val in header_values:
+            for keyword in expected_keywords:
+                if keyword.lower() in val.lower():
+                    found_keywords.add(keyword)
         
         assert len(header_values) >= MIN_HEADER_VALUES, (
-            f"Too few header values found. Expected at least {MIN_HEADER_VALUES} distinct headers, "
-            f"found {len(header_values)}: {header_values}"
+            f"Too few header values found. Expected at least {MIN_HEADER_VALUES} distinct headers "
+            f"for real estate table, found {len(header_values)}: {[h[1] for h in header_values[:10]]}"
         )
         
-        assert len(found_in_headers) >= 2, (
-            f"Expected header keywords not found in correct positions. "
-            f"Expected at least 2 of {expected_headers}, found {found_in_headers}. "
-            f"All headers: {header_values}"
+        assert len(found_keywords) >= 3, (
+            f"Expected real estate header keywords not found. "
+            f"Expected at least 3 of {expected_keywords}, found {found_keywords}. "
+            f"All headers: {[h[1] for h in header_values[:10]]}"
         )
         
         # Check headers are in different columns (not all in column A)
@@ -423,116 +426,88 @@ class TestPdfIntegration:
     def test_pdf_golden_structure_expectations(self, tmp_path):
         """Verify the expected multi-column structure (golden expectations).
         
-        This test encodes the INTENDED behavior for test.pdf:
-        - Expected headers: "Amount", "Date", "Status" in separate columns
-        - Expected data: Names in column A/1, numbers in column B/2, etc.
+        This test encodes the INTENDED behavior for test.pdf (real estate lease table):
+        - Expected headers: "Property", "Lease", "Area", "Rent", etc. in separate columns
+        - Expected data: Property names, unit numbers, dates, financial values
         - This serves as a golden reference for the expected output
         """
         # Constants for this test
         MAX_ROWS_TO_CHECK = 20
-        MAX_COLS_TO_CHECK = 10
-        MIN_MATCHING_NAMES = 3
-        MIN_NUMERIC_VALUES = 3
-        MIN_DATE_VALUES = 3
-        MIN_STATUS_VALUES = 3
+        MAX_COLS_TO_CHECK = 20  # Check up to 20 columns for wide table
+        MIN_PROPERTY_ENTRIES = 2  # At least 2 properties
         
         out = tmp_path / "test_output.xlsx"
         result = extract(str(TEST_PDF), str(out))
         wb = load_workbook(str(result))
         ws = wb.active
         
-        # Golden expectations for test.pdf
-        # Based on the fixture, we expect a table with these characteristics:
+        # Golden expectations for real estate lease table
         
-        # 1. Expected headers should exist in DIFFERENT columns (flexible positions)
-        # This is more robust than hardcoding exact column numbers
-        expected_headers = ["Amount", "Date", "Status"]
+        # 1. Expected headers should exist in DIFFERENT columns
+        expected_keywords = ["Property", "Lease", "Area", "Rent", "Annual"]
         
-        # Find which columns contain these headers
-        header_positions = {}
-        for header_text in expected_headers:
+        # Find which columns contain these header keywords
+        found_keywords = {}
+        for keyword in expected_keywords:
             for col in range(1, min(ws.max_column + 1, MAX_COLS_TO_CHECK)):
                 cell_value = ws.cell(row=1, column=col).value
-                if cell_value and header_text.lower() in str(cell_value).lower():
-                    header_positions[header_text] = col
+                if cell_value and keyword.lower() in str(cell_value).lower():
+                    found_keywords[keyword] = col
                     break
         
-        # Assert all expected headers were found
-        for header in expected_headers:
-            assert header in header_positions, (
-                f"Golden expectation failed: Header '{header}' not found in "
-                f"first {MAX_COLS_TO_CHECK} columns"
-            )
-        
-        # Assert headers are in different columns (multi-column structure)
-        unique_cols = set(header_positions.values())
-        assert len(unique_cols) == len(expected_headers), (
-            f"Golden expectation failed: Headers should be in different columns, "
-            f"but found in columns {sorted(unique_cols)}. "
-            f"Mapping: {header_positions}"
+        # Assert at least 3 of the expected keywords were found
+        assert len(found_keywords) >= 3, (
+            f"Golden expectation failed: Expected at least 3 of {expected_keywords} "
+            f"in headers, but only found {len(found_keywords)}: {found_keywords}"
         )
         
-        # 2. Expected data pattern: names in column 1, numeric values in column 2
-        expected_names = ["Alice", "Bob", "Charlie", "David", "Eve", "Frank"]
-        found_names = []
-        
-        for row_idx in range(2, min(ws.max_row + 1, MAX_ROWS_TO_CHECK)):
-            cell_value = ws.cell(row=row_idx, column=1).value
-            if cell_value and str(cell_value).strip():
-                found_names.append(str(cell_value).strip())
-        
-        # At least N of the expected names should be found
-        matching_names = [name for name in expected_names if name in found_names]
-        assert len(matching_names) >= MIN_MATCHING_NAMES, (
-            f"Golden expectation failed: Expected at least {MIN_MATCHING_NAMES} names from "
-            f"{expected_names} in column 1, but only found {len(matching_names)}: "
-            f"{matching_names}"
+        # Assert keywords are in different columns (multi-column structure)
+        unique_cols = set(found_keywords.values())
+        assert len(unique_cols) >= 3, (
+            f"Golden expectation failed: Header keywords should be in different columns, "
+            f"but found in only {len(unique_cols)} columns: {sorted(unique_cols)}. "
+            f"Mapping: {found_keywords}"
         )
         
-        # 3. Numeric values should appear in Amount column (wherever it is)
-        amount_col = header_positions.get("Amount", 2)  # Default to column 2 if not found
-        numeric_values_in_amount_col = 0
-        for row_idx in range(2, min(ws.max_row + 1, MAX_ROWS_TO_CHECK)):
-            cell_value = ws.cell(row=row_idx, column=amount_col).value
-            if cell_value is not None:
-                try:
-                    # Try to interpret as number
-                    float(str(cell_value).replace(",", ""))
-                    numeric_values_in_amount_col += 1
-                except (ValueError, TypeError):
-                    pass
+        # 2. Expected data pattern: property names should appear
+        expected_properties = ["AIP KKR", "PKP LKT", "KSN Southland", "Corner Fudge", "Precision"]
+        found_properties = []
         
-        assert numeric_values_in_amount_col >= MIN_NUMERIC_VALUES, (
-            f"Golden expectation failed: Expected at least {MIN_NUMERIC_VALUES} numeric values "
-            f"in Amount column (col {amount_col}), but only found {numeric_values_in_amount_col}"
+        # Search for property names in first few columns
+        for row_idx in range(2, min(ws.max_row + 1, MAX_ROWS_TO_CHECK)):
+            for col_idx in range(1, min(5, ws.max_column + 1)):  # Check first 5 columns
+                cell_value = ws.cell(row=row_idx, column=col_idx).value
+                if cell_value:
+                    val_str = str(cell_value).strip()
+                    for prop in expected_properties:
+                        if prop.lower() in val_str.lower():
+                            found_properties.append(prop)
+                            break
+        
+        # At least 2 property entries should be found
+        assert len(found_properties) >= MIN_PROPERTY_ENTRIES, (
+            f"Golden expectation failed: Expected at least {MIN_PROPERTY_ENTRIES} property entries "
+            f"from {expected_properties}, but only found {len(found_properties)}: {found_properties}"
         )
         
-        # 4. Date-like values should appear in Date column
-        date_col = header_positions.get("Date", 3)  # Default to column 3 if not found
-        date_like_values_in_date_col = 0
-        for row_idx in range(2, min(ws.max_row + 1, MAX_ROWS_TO_CHECK)):
-            cell_value = ws.cell(row=row_idx, column=date_col).value
-            if cell_value and str(cell_value).strip():
-                # Check for date-like pattern (contains digits and hyphens/slashes)
-                val_str = str(cell_value)
-                if ("-" in val_str or "/" in val_str) and any(c.isdigit() for c in val_str):
-                    date_like_values_in_date_col += 1
+        # 3. Numeric values should appear in multiple columns (financial data)
+        numeric_cols = 0
+        for col_idx in range(1, min(ws.max_column + 1, MAX_COLS_TO_CHECK)):
+            has_numeric = False
+            for row_idx in range(2, min(ws.max_row + 1, 10)):
+                cell_value = ws.cell(row=row_idx, column=col_idx).value
+                if cell_value is not None:
+                    try:
+                        val = float(str(cell_value).replace(",", ""))
+                        if val > 0:  # Valid positive number
+                            has_numeric = True
+                            break
+                    except (ValueError, TypeError):
+                        pass
+            if has_numeric:
+                numeric_cols += 1
         
-        assert date_like_values_in_date_col >= MIN_DATE_VALUES, (
-            f"Golden expectation failed: Expected at least {MIN_DATE_VALUES} date-like values "
-            f"in Date column (col {date_col}), but only found {date_like_values_in_date_col}"
-        )
-        
-        # 5. Status values should appear in Status column
-        status_col = header_positions.get("Status", 4)  # Default to column 4 if not found
-        status_keywords = ["Active", "Inactive"]
-        status_values_in_status_col = 0
-        for row_idx in range(2, min(ws.max_row + 1, MAX_ROWS_TO_CHECK)):
-            cell_value = ws.cell(row=row_idx, column=status_col).value
-            if cell_value and any(kw.lower() in str(cell_value).lower() for kw in status_keywords):
-                status_values_in_status_col += 1
-        
-        assert status_values_in_status_col >= MIN_STATUS_VALUES, (
-            f"Golden expectation failed: Expected at least {MIN_STATUS_VALUES} status values "
-            f"in Status column (col {status_col}), but only found {status_values_in_status_col}"
+        assert numeric_cols >= 5, (
+            f"Golden expectation failed: Expected at least 5 columns with numeric values "
+            f"(financial data), but only found {numeric_cols}"
         )
