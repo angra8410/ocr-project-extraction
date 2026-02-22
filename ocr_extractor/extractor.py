@@ -7,7 +7,7 @@ Orchestrates the full conversion flow:
     → Table detection
     → OCR of each cell
     → Merge detection
-    → Excel writing
+    → HTML table writing
 """
 
 from __future__ import annotations
@@ -20,7 +20,6 @@ from typing import List, Optional
 
 from PIL import Image
 
-from .excel_writer import write_xlsx
 from .ocr_engine import ocr_cell
 from .preprocessor import preprocess
 from .table_detector import TableGrid, detect_merges, detect_table
@@ -41,29 +40,19 @@ def extract(
     input_path: str | Path,
     output_path: Optional[str | Path] = None,
     debug: bool = False,
-    tenancy_mode: bool = False,
-    output_format: str = "xlsx",
 ) -> Path:
-    """Convert *input_path* to a layout-preserving .xlsx (or .json) file.
+    """Convert *input_path* to a layout-preserving HTML table file.
 
     Parameters
     ----------
     input_path:
         Path to a .jpg/.jpeg/.png/.tif/.tiff or .pdf file.
     output_path:
-        Destination path.  Defaults to the input file name with ``.xlsx`` (or
-        ``.json`` when *output_format* is ``"html"``) in the same directory.
+        Destination path.  Defaults to the input file name with ``.html``
+        in the same directory.
     debug:
         When *True* extra diagnostic information is logged and (for image
         inputs) an annotated preview PNG is saved alongside the output.
-    tenancy_mode:
-        When *True* uses specialized parsing for tenancy schedules with
-        structured columns like Property, Tenant, Suite, Lease dates, etc.
-        This ensures multi-column Excel output with proper data types.
-    output_format:
-        ``"xlsx"`` (default) or ``"html"``.  When ``"html"`` the output is a
-        ``.json`` file containing the HTML table and a reasoning block.
-        Implies *tenancy_mode*.
 
     Returns
     -------
@@ -74,15 +63,8 @@ def extract(
     if not input_path.exists():
         raise FileNotFoundError(f"Input file not found: {input_path}")
 
-    # HTML format implies tenancy mode; tenancy mode implies HTML output
-    if output_format == "html":
-        tenancy_mode = True
-    elif tenancy_mode:
-        output_format = "html"
-
     if output_path is None:
-        suffix = ".html" if output_format == "html" else ".xlsx"
-        output_path = input_path.with_suffix(suffix)
+        output_path = input_path.with_suffix(".html")
     output_path = Path(output_path)
 
     # Validate the output directory exists and is writable
@@ -113,15 +95,12 @@ def extract(
         _save_debug_preview(images, combined_grid, output_path)
         _save_debug_artifacts(input_path, combined_grid, output_path)
 
-    # Choose export method based on mode
-    if output_format == "html":
-        logger.info("Using tenancy schedule parser for HTML table output")
-        from .tenancy_parser import export_tenancy_to_html, parse_grid_to_rows
+    # Export as HTML table
+    logger.info("Using tenancy schedule parser for HTML table output")
+    from .tenancy_parser import export_tenancy_to_html, parse_grid_to_rows
 
-        tenancy_rows = parse_grid_to_rows(combined_grid)
-        export_tenancy_to_html(tenancy_rows, output_path)
-    else:
-        write_xlsx(combined_grid, output_path)
+    tenancy_rows = parse_grid_to_rows(combined_grid)
+    export_tenancy_to_html(tenancy_rows, output_path)
 
     return output_path.resolve()
 
@@ -295,6 +274,15 @@ def _save_debug_preview(
 # ---------------------------------------------------------------------------
 
 
+def _col_letter(n: int) -> str:
+    """Convert 1-based column index to spreadsheet-style column letter (A, B, …, Z, AA, …)."""
+    result = ""
+    while n > 0:
+        n, rem = divmod(n - 1, 26)
+        result = chr(ord("A") + rem) + result
+    return result
+
+
 def _save_debug_artifacts(
     input_path: Path,
     grid: TableGrid,
@@ -345,7 +333,7 @@ def _save_debug_artifacts(
             f"  └───────────────────────┬──────────────────────────────┘",
             f"                          ▼",
             f"  ┌──────────────────────────────────────────────────────┐",
-            f"  │ 5. XLSX Write                                        │",
+            f"  │ 5. HTML Write                                        │",
             f"  │    sheet name   : Table                              │",
             f"  │    output       : {output_path.name:<34}│",
             f"  └──────────────────────────────────────────────────────┘",
@@ -369,11 +357,9 @@ def _save_debug_artifacts(
                 "## Merged Cell Ranges",
                 "",
             ]
-            from openpyxl.utils import get_column_letter  # noqa: PLC0415
-
             for mc in merged_cells:
-                start_col = get_column_letter(mc.col + 1)
-                end_col = get_column_letter(mc.col + mc.colspan)
+                start_col = _col_letter(mc.col + 1)
+                end_col = _col_letter(mc.col + mc.colspan)
                 start_row = mc.row + 1
                 end_row = mc.row + mc.rowspan
                 addr = f"{start_col}{start_row}:{end_col}{end_row}"

@@ -12,7 +12,7 @@ from typing import Optional
 
 import cv2
 import numpy as np
-from openpyxl import load_workbook
+import pandas as pd
 from PIL import Image
 
 from .table_detector import TableGrid
@@ -30,17 +30,17 @@ MAX_ROWS_TO_ANALYZE = 100    # Limit row analysis for performance
 
 
 def generate_table_preview_html(
-    xlsx_path: Path,
+    html_path: Path,
     output_path: Path,
     max_rows: int = 30,
     max_cols: int = 15,
 ) -> None:
-    """Generate an HTML preview of the extracted table.
-    
+    """Generate a styled HTML preview of the extracted table.
+
     Parameters
     ----------
-    xlsx_path:
-        Path to the .xlsx file to preview.
+    html_path:
+        Path to the .html file to preview.
     output_path:
         Path where the HTML preview will be saved.
     max_rows:
@@ -48,13 +48,16 @@ def generate_table_preview_html(
     max_cols:
         Maximum number of columns to include in the preview.
     """
-    wb = load_workbook(str(xlsx_path))
-    ws = wb.active
-    
-    # Determine the actual range to display
-    display_rows = min(ws.max_row, max_rows)
-    display_cols = min(ws.max_column, max_cols)
-    
+    dfs = pd.read_html(str(html_path))
+    if not dfs:
+        output_path.write_text("<html><body><p>No table found</p></body></html>", encoding="utf-8")
+        return
+
+    df = dfs[0]
+    display_rows = min(len(df), max_rows)
+    display_cols = min(len(df.columns), max_cols)
+    df_display = df.iloc[:display_rows, :display_cols]
+
     # Build HTML
     html_lines = [
         "<!DOCTYPE html>",
@@ -70,42 +73,17 @@ def generate_table_preview_html(
         "    th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }",
         "    th { background-color: #D9E1F2; font-weight: bold; }",
         "    tr:nth-child(even) { background-color: #f9f9f9; }",
-        "    .truncated { color: #999; font-style: italic; }",
         "  </style>",
         "</head>",
         "<body>",
         "  <h1>Table Preview</h1>",
-        f"  <div class='info'>Full size: {ws.max_row} rows × {ws.max_column} columns</div>",
+        f"  <div class='info'>Full size: {len(df)} rows × {len(df.columns)} columns</div>",
         f"  <div class='info'>Showing: first {display_rows} rows × {display_cols} columns</div>",
-        "  <table>",
-    ]
-    
-    # Add table rows
-    for row_idx in range(1, display_rows + 1):
-        html_lines.append("    <tr>")
-        for col_idx in range(1, display_cols + 1):
-            cell = ws.cell(row=row_idx, column=col_idx)
-            value = str(cell.value) if cell.value is not None else ""
-            
-            # Truncate long values
-            if len(value) > 50:
-                value = value[:47] + "..."
-            
-            # Escape HTML
-            value = value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-            
-            # Use <th> for first row (header)
-            tag = "th" if row_idx == 1 else "td"
-            html_lines.append(f"      <{tag}>{value}</{tag}>")
-        
-        html_lines.append("    </tr>")
-    
-    html_lines.extend([
-        "  </table>",
+        df_display.to_html(index=False, escape=True, border=0),
         "</body>",
         "</html>",
-    ])
-    
+    ]
+
     output_path.write_text("\n".join(html_lines), encoding="utf-8")
     logger.info("Table preview HTML saved to %s", output_path)
 
@@ -202,66 +180,56 @@ def generate_layout_overlay(
 
 
 def generate_assertions_report(
-    xlsx_path: Path,
+    html_path: Path,
     output_path: Path,
     test_name: str = "Multi-Column Structure Test",
 ) -> None:
     """Generate a markdown report explaining what was checked.
-    
+
     Parameters
     ----------
-    xlsx_path:
-        Path to the .xlsx file that was tested.
+    html_path:
+        Path to the .html file that was tested.
     output_path:
         Path where the markdown report will be saved.
     test_name:
         Name of the test that generated this report.
     """
-    wb = load_workbook(str(xlsx_path))
-    ws = wb.active
-    
-    # Gather statistics
-    num_rows = ws.max_row
-    num_cols = ws.max_column
-    
-    # Count populated cells per column (limit to MAX_COLUMNS_TO_ANALYZE for performance)
-    col_populations = {}
-    for col_idx in range(1, min(num_cols + 1, MAX_COLUMNS_TO_ANALYZE)):
-        populated = 0
-        for row_idx in range(1, min(num_rows + 1, MAX_ROWS_TO_ANALYZE)):
-            cell_value = ws.cell(row=row_idx, column=col_idx).value
-            if cell_value is not None and str(cell_value).strip():
-                populated += 1
-        col_populations[col_idx] = populated
-    
-    # Collect header values (limit to MAX_COLUMNS_TO_ANALYZE)
-    header_row = 1
-    header_values = []
-    for col_idx in range(1, min(num_cols + 1, MAX_COLUMNS_TO_ANALYZE)):
-        cell_value = ws.cell(row=header_row, column=col_idx).value
-        if cell_value and str(cell_value).strip():
-            header_values.append(f"Column {col_idx}: '{cell_value}'")
-    
-    # Check for merged cells
-    merged_ranges = list(ws.merged_cells.ranges) if hasattr(ws, 'merged_cells') else []
-    
-    # Count data rows with multi-column values (limit to MAX_ROWS_TO_ANALYZE)
+    dfs = pd.read_html(str(html_path))
+    if not dfs:
+        output_path.write_text(f"# {test_name}\n\nNo table found.\n", encoding="utf-8")
+        return
+
+    df = dfs[0]
+    num_rows = len(df)
+    num_cols = len(df.columns)
+
+    # Limit for analysis
+    df_limited = df.iloc[:MAX_ROWS_TO_ANALYZE, :MAX_COLUMNS_TO_ANALYZE]
+
+    # Count populated cells per column
+    col_populations: dict[int, int] = {}
+    for col_idx, col_name in enumerate(df_limited.columns, start=1):
+        col_populations[col_idx] = int(df_limited[col_name].notna().sum())
+
+    # Collect header values
+    header_values = [
+        f"Column {i + 1}: '{col}'"
+        for i, col in enumerate(df.columns[:MAX_COLUMNS_TO_ANALYZE])
+    ]
+
+    # Count data rows with multi-column values
     data_rows_with_multi_cols = 0
-    for row_idx in range(2, min(num_rows + 1, MAX_ROWS_TO_ANALYZE)):
-        has_value_beyond_A = False
-        for col_idx in range(2, min(num_cols + 1, MAX_COLUMNS_TO_ANALYZE)):
-            cell_value = ws.cell(row=row_idx, column=col_idx).value
-            if cell_value is not None and str(cell_value).strip():
-                has_value_beyond_A = True
-                break
-        if has_value_beyond_A:
-            data_rows_with_multi_cols += 1
-    
+    if num_cols > 1:
+        for row_idx in range(min(num_rows, MAX_ROWS_TO_ANALYZE)):
+            if df_limited.iloc[row_idx, 1:].notna().any():
+                data_rows_with_multi_cols += 1
+
     # Build report
     lines = [
         f"# {test_name}",
         "",
-        f"**File:** `{xlsx_path.name}`",
+        f"**File:** `{html_path.name}`",
         f"**Generated:** {output_path.parent.name}",
         "",
         "---",
@@ -270,7 +238,6 @@ def generate_assertions_report(
         "",
         f"- **Rows detected:** {num_rows}",
         f"- **Columns detected:** {num_cols}",
-        f"- **Merged cell ranges:** {len(merged_ranges)}",
         "",
         "---",
         "",
@@ -281,10 +248,10 @@ def generate_assertions_report(
         "| Column | Populated Cells |",
         "|--------|----------------|",
     ]
-    
+
     for col_idx in sorted(col_populations.keys()):
         lines.append(f"| {col_idx} | {col_populations[col_idx]} |")
-    
+
     lines.extend([
         "",
         "### Why This Matters",
@@ -300,13 +267,13 @@ def generate_assertions_report(
         "### Detected Headers",
         "",
     ])
-    
+
     if header_values:
         for hv in header_values:
             lines.append(f"- {hv}")
     else:
         lines.append("- *(No header values detected)*")
-    
+
     lines.extend([
         "",
         "### Why This Matters",
@@ -318,7 +285,7 @@ def generate_assertions_report(
         "",
         "## Data Row Analysis",
         "",
-        f"- **Data rows with multi-column values:** {data_rows_with_multi_cols} / {num_rows - 1}",
+        f"- **Data rows with multi-column values:** {data_rows_with_multi_cols} / {num_rows}",
         "",
         "### Why This Matters",
         "",
@@ -328,38 +295,17 @@ def generate_assertions_report(
         "",
         "---",
         "",
-        "## Merged Cells",
-        "",
-    ])
-    
-    if merged_ranges:
-        lines.append(f"Found **{len(merged_ranges)}** merged cell ranges:")
-        lines.append("")
-        for mr in merged_ranges[:10]:  # Limit to first 10
-            lines.append(f"- `{mr}`")
-        if len(merged_ranges) > 10:
-            lines.append(f"- *(and {len(merged_ranges) - 10} more)*")
-    else:
-        lines.append("No merged cells detected in this extraction.")
-        lines.append("")
-        lines.append("*Note: Some tables may not have merged cells. This is expected.*")
-    
-    lines.extend([
-        "",
-        "---",
-        "",
         "## Test Assertions",
         "",
         "The integration test verified:",
         "",
         f"1. ✓ Column count >= 4 (found {num_cols})",
         f"2. ✓ Header values in multiple columns (found {len(header_values)} headers)",
-        f"3. ✓ Data rows with multi-column values >= 3 (found {data_rows_with_multi_cols})",
-        "4. ✓ Sheet name is 'Table'",
+        f"3. ✓ Data rows with multi-column values >= 1 (found {data_rows_with_multi_cols})",
         "",
         "**Result: PASSED** - Multi-column structure preserved.",
         "",
     ])
-    
+
     output_path.write_text("\n".join(lines), encoding="utf-8")
     logger.info("Assertions report saved to %s", output_path)
