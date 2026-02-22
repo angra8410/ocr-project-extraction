@@ -42,16 +42,17 @@ def extract(
     output_path: Optional[str | Path] = None,
     debug: bool = False,
     tenancy_mode: bool = False,
+    output_format: str = "xlsx",
 ) -> Path:
-    """Convert *input_path* to a layout-preserving .xlsx file.
+    """Convert *input_path* to a layout-preserving .xlsx (or .json) file.
 
     Parameters
     ----------
     input_path:
         Path to a .jpg/.jpeg/.png/.tif/.tiff or .pdf file.
     output_path:
-        Destination .xlsx path.  Defaults to the input file name with
-        ``.xlsx`` extension in the same directory.
+        Destination path.  Defaults to the input file name with ``.xlsx`` (or
+        ``.json`` when *output_format* is ``"html"``) in the same directory.
     debug:
         When *True* extra diagnostic information is logged and (for image
         inputs) an annotated preview PNG is saved alongside the output.
@@ -59,18 +60,27 @@ def extract(
         When *True* uses specialized parsing for tenancy schedules with
         structured columns like Property, Tenant, Suite, Lease dates, etc.
         This ensures multi-column Excel output with proper data types.
+    output_format:
+        ``"xlsx"`` (default) or ``"html"``.  When ``"html"`` the output is a
+        ``.json`` file containing the HTML table and a reasoning block.
+        Implies *tenancy_mode*.
 
     Returns
     -------
     Path
-        Resolved path to the written .xlsx file.
+        Resolved path to the written file.
     """
     input_path = Path(input_path)
     if not input_path.exists():
         raise FileNotFoundError(f"Input file not found: {input_path}")
 
+    # HTML format implies tenancy mode
+    if output_format == "html":
+        tenancy_mode = True
+
     if output_path is None:
-        output_path = input_path.with_suffix(".xlsx")
+        suffix = ".json" if output_format == "html" else ".xlsx"
+        output_path = input_path.with_suffix(suffix)
     output_path = Path(output_path)
 
     # Validate the output directory exists and is writable
@@ -102,7 +112,13 @@ def extract(
         _save_debug_artifacts(input_path, combined_grid, output_path)
 
     # Choose export method based on mode
-    if tenancy_mode:
+    if output_format == "html":
+        logger.info("Using tenancy schedule parser for HTML table output")
+        from .tenancy_parser import export_tenancy_to_html, parse_grid_to_rows
+
+        tenancy_rows = parse_grid_to_rows(combined_grid)
+        export_tenancy_to_html(tenancy_rows, output_path)
+    elif tenancy_mode:
         logger.info("Using tenancy schedule parser for structured output")
         from .tenancy_parser import export_tenancy_to_excel, parse_grid_to_rows
 

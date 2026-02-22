@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
 from pathlib import Path
 
@@ -10,8 +11,10 @@ from openpyxl import load_workbook
 
 from ocr_extractor.table_detector import CellRegion, TableGrid
 from ocr_extractor.tenancy_parser import (
+    HTML_SCHEMA_COLUMNS,
     TenancyRow,
     export_tenancy_to_excel,
+    export_tenancy_to_html,
     normalize_date,
     normalize_number,
     parse_grid_to_rows,
@@ -380,3 +383,190 @@ class TestExportTenancyToExcel:
         # Default width is typically around 8-10
         col_a_width = ws.column_dimensions["A"].width
         assert col_a_width > 10  # Should be wider than default
+
+
+class TestExportTenancyToHtml:
+    """Test HTML table export with reasoning block."""
+
+    def _make_rows(self):
+        return [
+            TenancyRow(
+                property="Cornet Axol",
+                as_of_date="2024-09-30",
+                tenant_name="Horizon Builders, LLC",
+                suite="101",
+                lease_from="2022-04-01",
+                lease_to="2027-03-30",
+                area_sqft=94940.0,
+                monthly_amount=7911.67,
+                annual_amount=94940.0,
+                row_type="lease_summary",
+            ),
+            TenancyRow(
+                property="Cornet Axol",
+                as_of_date="2024-09-30",
+                tenant_name="Horizon Builders, LLC",
+                charge_label="CAM",
+                period_from="2024-01-01",
+                period_to="2024-12-31",
+                monthly_amount=500.0,
+                annual_amount=6000.0,
+                management_fee_rate=0.05,
+                row_type="charge_schedule",
+            ),
+        ]
+
+    def test_returns_dict_with_required_keys(self):
+        result = export_tenancy_to_html(self._make_rows())
+        assert isinstance(result, dict)
+        assert "html_table" in result
+        assert "reasoning" in result
+
+    def test_reasoning_has_required_sub_keys(self):
+        result = export_tenancy_to_html(self._make_rows())
+        reasoning = result["reasoning"]
+        assert "parsing_strategy" in reasoning
+        assert "normalization_decisions" in reasoning
+        assert "warnings" in reasoning
+
+    def test_html_table_is_string(self):
+        result = export_tenancy_to_html(self._make_rows())
+        assert isinstance(result["html_table"], str)
+
+    def test_html_table_has_table_tags(self):
+        result = export_tenancy_to_html(self._make_rows())
+        html_table = result["html_table"]
+        assert html_table.strip().startswith("<table>")
+        assert html_table.strip().endswith("</table>")
+
+    def test_html_table_has_thead_and_tbody(self):
+        result = export_tenancy_to_html(self._make_rows())
+        html_table = result["html_table"]
+        assert "<thead>" in html_table
+        assert "</thead>" in html_table
+        assert "<tbody>" in html_table
+        assert "</tbody>" in html_table
+
+    def test_html_table_has_all_schema_columns_in_header(self):
+        result = export_tenancy_to_html(self._make_rows())
+        html_table = result["html_table"]
+        for col in HTML_SCHEMA_COLUMNS:
+            assert f"<th>{col}</th>" in html_table
+
+    def test_html_schema_columns_order(self):
+        """HTML_SCHEMA_COLUMNS must match the spec-mandated order."""
+        required = [
+            "property", "as_of_date", "row_type", "tenant_name", "suite",
+            "lease_from", "lease_to", "area_sqft", "charge_label",
+            "period_from", "period_to", "monthly_amount", "annual_amount",
+            "management_fee_rate", "notes",
+        ]
+        assert HTML_SCHEMA_COLUMNS == required
+
+    def test_html_table_has_data_rows(self):
+        result = export_tenancy_to_html(self._make_rows())
+        html_table = result["html_table"]
+        assert html_table.count("<tr>") >= 3  # header + 2 data rows
+
+    def test_html_table_data_in_correct_columns(self):
+        rows = [TenancyRow(
+            property="Test Property",
+            tenant_name="Test Tenant",
+            suite="202",
+            row_type="lease_summary",
+        )]
+        result = export_tenancy_to_html(rows)
+        html_table = result["html_table"]
+        assert "Test Property" in html_table
+        assert "Test Tenant" in html_table
+        assert "202" in html_table
+        assert "lease_summary" in html_table
+
+    def test_html_table_has_td_cells_per_row(self):
+        result = export_tenancy_to_html(self._make_rows())
+        html_table = result["html_table"]
+        # Each data row must contain exactly len(HTML_SCHEMA_COLUMNS) <td> cells
+        import re
+        data_rows = re.findall(r"<tr>(.*?)</tr>", html_table, re.DOTALL)
+        # First <tr> is the header row (has <th> not <td>)
+        for data_row in data_rows[1:]:
+            td_count = data_row.count("<td>")
+            assert td_count == len(HTML_SCHEMA_COLUMNS)
+
+    def test_charge_label_and_period_fields_exported(self):
+        result = export_tenancy_to_html(self._make_rows())
+        html_table = result["html_table"]
+        assert "CAM" in html_table
+        assert "2024-01-01" in html_table
+        assert "2024-12-31" in html_table
+
+    def test_management_fee_rate_exported(self):
+        result = export_tenancy_to_html(self._make_rows())
+        html_table = result["html_table"]
+        assert "0.05" in html_table
+
+    def test_normalization_decisions_is_list(self):
+        result = export_tenancy_to_html(self._make_rows())
+        assert isinstance(result["reasoning"]["normalization_decisions"], list)
+        assert len(result["reasoning"]["normalization_decisions"]) > 0
+
+    def test_warnings_is_list(self):
+        result = export_tenancy_to_html(self._make_rows())
+        assert isinstance(result["reasoning"]["warnings"], list)
+
+    def test_row_warnings_propagated(self):
+        rows = [TenancyRow(
+            property="Test",
+            warnings=["Date '4/90/2026' interpreted as '2026-04-30'"],
+        )]
+        result = export_tenancy_to_html(rows)
+        assert "4/90/2026" in result["reasoning"]["warnings"][0]
+
+    def test_extra_warnings_appended(self):
+        rows = [TenancyRow(property="Test")]
+        result = export_tenancy_to_html(rows, warnings_list=["Extra warning"])
+        assert "Extra warning" in result["reasoning"]["warnings"]
+
+    def test_html_escaping(self):
+        rows = [TenancyRow(
+            property="<Acme & Sons>",
+            tenant_name='Say "hello"',
+        )]
+        result = export_tenancy_to_html(rows)
+        html_table = result["html_table"]
+        assert "&lt;Acme &amp; Sons&gt;" in html_table
+        assert "&quot;hello&quot;" in html_table
+
+    def test_writes_json_file_when_output_path_given(self, tmp_path):
+        output_path = tmp_path / "output.json"
+        export_tenancy_to_html(self._make_rows(), output_path=output_path)
+        assert output_path.exists()
+        data = json.loads(output_path.read_text(encoding="utf-8"))
+        assert "html_table" in data
+        assert "reasoning" in data
+
+    def test_json_file_is_valid_json(self, tmp_path):
+        output_path = tmp_path / "output.json"
+        export_tenancy_to_html(self._make_rows(), output_path=output_path)
+        content = output_path.read_text(encoding="utf-8")
+        parsed = json.loads(content)
+        assert isinstance(parsed["html_table"], str)
+
+    def test_empty_rows_produces_valid_html(self):
+        result = export_tenancy_to_html([])
+        html_table = result["html_table"]
+        assert "<table>" in html_table
+        assert "<thead>" in html_table
+        assert "<tbody>" in html_table
+        for col in HTML_SCHEMA_COLUMNS:
+            assert f"<th>{col}</th>" in html_table
+
+    def test_row_type_column_present_in_each_row(self):
+        rows = [
+            TenancyRow(property="P", row_type="rent_step"),
+            TenancyRow(property="P", row_type="charge_schedule"),
+        ]
+        result = export_tenancy_to_html(rows)
+        html_table = result["html_table"]
+        assert "rent_step" in html_table
+        assert "charge_schedule" in html_table
