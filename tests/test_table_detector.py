@@ -9,8 +9,10 @@ from ocr_extractor.table_detector import (
     TableGrid,
     _estimate_header_rows,
     _grid_from_lines,
+    _grid_from_projection,
     _grid_from_whitespace,
     _line_positions,
+    _projection_valleys,
     _whitespace_separators,
     detect_merges,
     detect_table,
@@ -197,9 +199,116 @@ class TestDetectMerges:
         # Allow up to 1 spurious merge in edge cases
         assert len(merged) <= 1
 
+
     def test_empty_grid_handled(self):
         """detect_merges should not crash on an empty grid."""
         img = Image.new("RGB", (100, 100), "white")
         grid = TableGrid()
         result = detect_merges(img, grid)
         assert isinstance(result, TableGrid)
+
+
+# ---------------------------------------------------------------------------
+# _projection_valleys
+# ---------------------------------------------------------------------------
+
+
+class TestProjectionValleys:
+    def test_detects_gap_columns(self):
+        """A region with no dark pixels should appear as a valley."""
+        gray = np.ones((100, 300), dtype=np.uint8) * 200  # light background
+        # Two text-like blocks with a clear gap in between
+        gray[:, 10:90] = 50   # first block (dark)
+        gray[:, 210:290] = 50  # second block (dark)
+        # Columns 90-210 are light → should contain at least one valley
+        valleys = _projection_valleys(gray, axis=0, threshold_ratio=0.2)
+        assert len(valleys) >= 1
+        # At least one valley should fall in the gap region
+        assert any(90 <= v <= 210 for v in valleys)
+
+    def test_empty_image_returns_empty(self):
+        gray = np.full((50, 50), 255, dtype=np.uint8)
+        assert _projection_valleys(gray, axis=0) == []
+
+    def test_single_block_no_internal_valleys(self):
+        """A uniformly dark strip should produce no valleys."""
+        gray = np.zeros((50, 200), dtype=np.uint8)  # all dark
+        valleys = _projection_valleys(gray, axis=0, threshold_ratio=0.2)
+        assert len(valleys) == 0
+
+
+# ---------------------------------------------------------------------------
+# _grid_from_projection
+# ---------------------------------------------------------------------------
+
+
+class TestGridFromProjection:
+    def _make_noisy_columnar_image(
+        self,
+        num_cols: int = 4,
+        col_w: int = 60,
+        gap_w: int = 20,
+        height: int = 200,
+        noise: int = 5,
+    ) -> np.ndarray:
+        """Create a grayscale array with text-like blocks separated by noisy gaps."""
+        width = num_cols * col_w + (num_cols - 1) * gap_w + 2 * gap_w
+        gray = np.full((height, width), 240, dtype=np.uint8)  # near-white background
+        # Fixed seed for reproducibility: the exact gap positions matter for
+        # the valley-detection assertions below.
+        rng = np.random.default_rng(42)
+        for i in range(num_cols):
+            x_start = gap_w + i * (col_w + gap_w)
+            x_end = x_start + col_w
+            # Simulate text: scatter dark pixels inside columns
+            gray[:, x_start:x_end] = 80
+        # Add a little noise in the gaps (simulating scanned document noise)
+        noise_mask = rng.integers(0, 255, size=(height, width)) > (255 - noise * 3)
+        gray[noise_mask] = 50
+        return gray
+
+    def test_multi_column_scanned_like_image(self):
+        """Projection-valley fallback should detect multiple columns."""
+        gray = self._make_noisy_columnar_image(num_cols=4)
+        grid = _grid_from_projection(gray, debug=True)
+        assert grid.num_cols >= 2, (
+            f"Expected >= 2 columns from projection fallback, got {grid.num_cols}"
+        )
+
+    def test_produces_valid_bboxes(self):
+        gray = self._make_noisy_columnar_image(num_cols=3)
+        grid = _grid_from_projection(gray)
+        for cell in grid.cells:
+            l, t, r, b = cell.bbox
+            assert r > l
+            assert b > t
+
+
+# ---------------------------------------------------------------------------
+# Regression: detect_table falls back gracefully on noisy / lineless images
+# ---------------------------------------------------------------------------
+
+
+class TestDetectTableFallback:
+    def test_no_single_column_on_multi_column_image(self):
+        """detect_table must NOT collapse a clear multi-column layout into 1 column.
+
+        This is the core regression test: previously the whitespace fallback
+        required *perfectly* empty columns (projection == 0) which never
+        occurred in scanned documents with minor noise → always 1 column.
+        """
+        # Create an image that has NO ruling lines but clearly separate columns
+        width, height = 600, 300
+        img = Image.new("RGB", (width, height), "white")
+        draw = ImageDraw.Draw(img)
+        # Draw 4 text blocks without any grid lines
+        col_positions = [(20, 120), (170, 270), (320, 420), (470, 570)]
+        for x0, x1 in col_positions:
+            for row_y in range(20, height, 40):
+                draw.rectangle([(x0, row_y), (x1, row_y + 15)], fill="black")
+
+        grid = detect_table(img, debug=True)
+        assert grid.num_cols >= 2, (
+            f"Expected multiple columns from lineless multi-column image, "
+            f"got num_cols={grid.num_cols}"
+        )
