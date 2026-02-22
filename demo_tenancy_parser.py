@@ -62,6 +62,8 @@ def create_demo_grid() -> TableGrid:
 
 def main():
     """Run the demo."""
+    import tempfile
+    
     print("=" * 80)
     print("TENANCY SCHEDULE PARSER DEMO")
     print("=" * 80)
@@ -96,8 +98,9 @@ def main():
             print(f"    Warnings: {'; '.join(row.warnings)}")
         print()
 
-    # Export to Excel
-    output_path = Path("/tmp/demo_tenancy_output.xlsx")
+    # Export to Excel (use tempfile for cross-platform compatibility)
+    temp_dir = Path(tempfile.gettempdir())
+    output_path = temp_dir / "demo_tenancy_output.xlsx"
     print(f"Step 3: Exporting to Excel: {output_path}")
     result = export_tenancy_to_excel(rows, output_path)
     print(f"  ✓ Successfully exported to {result}")

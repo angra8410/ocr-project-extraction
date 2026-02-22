@@ -430,8 +430,7 @@ def _extract_row_data(
                 if normalized is not None:
                     setattr(tenancy_row, field, normalized)
                 else:
-                    # Store as text and add warning
-                    tenancy_row.notes = (tenancy_row.notes or "") + f" [{field}={raw_value}]"
+                    # Add warning for unparseable value
                     tenancy_row.warnings.append(f"Could not parse {field}: {raw_value}")
 
     return tenancy_row

@@ -85,17 +85,39 @@ class TestTenancyRow:
     def test_to_dict_all_fields(self):
         row = TenancyRow(
             property="Test Property",
+            as_of_date="2024-01-15",
             tenant_name="Test Tenant",
+            legal_name="Test Tenant LLC",
             suite="101",
+            lease_type="Gross",
+            lease_from="2024-01-01",
+            lease_to="2024-12-31",
+            term_months=12.0,
+            area_sqft=1500.0,
             monthly_amount=1000.0,
             annual_amount=12000.0,
+            security_deposit=2000.0,
+            loc_amount=5000.0,
+            notes="Test notes",
+            row_type="lease_summary",
         )
         data = row.to_dict()
         assert data["property"] == "Test Property"
+        assert data["as_of_date"] == "2024-01-15"
         assert data["tenant_name"] == "Test Tenant"
+        assert data["legal_name"] == "Test Tenant LLC"
         assert data["suite"] == "101"
+        assert data["lease_type"] == "Gross"
+        assert data["lease_from"] == "2024-01-01"
+        assert data["lease_to"] == "2024-12-31"
+        assert data["term_months"] == 12.0
+        assert data["area_sqft"] == 1500.0
         assert data["monthly_amount"] == 1000.0
         assert data["annual_amount"] == 12000.0
+        assert data["security_deposit"] == 2000.0
+        assert data["loc_amount"] == 5000.0
+        assert data["notes"] == "Test notes"
+        assert data["row_type"] == "lease_summary"
 
     def test_to_dict_with_warnings(self):
         row = TenancyRow(
