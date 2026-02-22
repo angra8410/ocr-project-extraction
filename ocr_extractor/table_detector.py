@@ -21,6 +21,21 @@ from PIL import Image
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+# Whitespace separator: maximum ink density (as fraction of column peak) that
+# still counts as a "gap" between columns/rows.
+_WHITESPACE_DENSITY_RATIO: float = 0.05
+_MIN_WHITESPACE_THRESHOLD: float = 2.0
+
+# Projection valley: fraction of peak density below which a stripe is a valley.
+_VALLEY_THRESHOLD_RATIO: float = 0.20
+# Minimum valley width as a fraction of the image dimension (keeps false
+# positives caused by sub-pixel noise from being promoted to column/row gaps).
+_VALLEY_MIN_GAP_DIVISOR: int = 50
+
 
 # ---------------------------------------------------------------------------
 # Data models
@@ -80,7 +95,8 @@ def detect_table(
     1. Convert to grayscale + threshold.
     2. Detect horizontal and vertical ruling lines with morphology.
     3. Intersect them to find cell bounding boxes.
-    4. Fall back to whitespace-gap analysis when no lines are found.
+    4. Fall back to whitespace-gap / projection-valley analysis when no lines
+       are found or when only 1 column is detected.
 
     Returns
     -------
@@ -102,6 +118,17 @@ def detect_table(
             logger.debug("No ruling lines found; falling back to whitespace analysis")
         grid = _grid_from_whitespace(gray, debug=debug)
 
+    # Sanity check: if we ended up with only 1 column on a wide image,
+    # retry using the projection-valley approach which is more robust for
+    # scanned documents where whitespace gaps are not perfectly empty.
+    if grid.num_cols <= 1:
+        if debug:
+            logger.debug(
+                "Only %d column(s) detected; retrying with projection-valley fallback",
+                grid.num_cols,
+            )
+        grid = _grid_from_projection(gray, debug=debug)
+
     return grid
 
 
@@ -120,13 +147,19 @@ def _detect_ruling_lines(
     """
     height, width = binary.shape
 
-    # Horizontal lines: long thin rectangles
-    h_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (max(width // 5, 40), 1))
-    h_lines_img = cv2.morphologyEx(binary, cv2.MORPH_OPEN, h_kernel, iterations=2)
+    # Bridge small gaps in lines before detecting them (handles broken/faint lines)
+    h_bridge = cv2.getStructuringElement(cv2.MORPH_RECT, (15, 1))
+    binary_hb = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, h_bridge)
+    v_bridge = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 15))
+    binary_vb = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, v_bridge)
 
-    # Vertical lines: tall thin rectangles
-    v_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(height // 5, 40)))
-    v_lines_img = cv2.morphologyEx(binary, cv2.MORPH_OPEN, v_kernel, iterations=2)
+    # Horizontal lines: long thin rectangles – use ~12.5% width (previously 20%)
+    h_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (max(width // 8, 20), 1))
+    h_lines_img = cv2.morphologyEx(binary_hb, cv2.MORPH_OPEN, h_kernel, iterations=1)
+
+    # Vertical lines: tall thin rectangles – use ~12.5% height (previously 20%)
+    v_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(height // 8, 20)))
+    v_lines_img = cv2.morphologyEx(binary_vb, cv2.MORPH_OPEN, v_kernel, iterations=1)
 
     h_coords = _line_positions(h_lines_img, axis=0)
     v_coords = _line_positions(v_lines_img, axis=1)
@@ -241,6 +274,26 @@ def _estimate_header_rows(h_lines: np.ndarray, n_rows: int) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Shared helper
+# ---------------------------------------------------------------------------
+
+
+def _add_boundary_sentinels(
+    positions: list[int], max_val: int, margin: int = 5
+) -> list[int]:
+    """Ensure *positions* starts at/near 0 and ends at/near *max_val*.
+
+    This guarantees that the grid spans the full image dimension even when
+    no separator is detected close to an edge.
+    """
+    if not positions or positions[0] > margin:
+        positions = [0] + positions
+    if positions[-1] < max_val - margin:
+        positions = positions + [max_val]
+    return positions
+
+
+# ---------------------------------------------------------------------------
 # Whitespace-based fallback
 # ---------------------------------------------------------------------------
 
@@ -255,15 +308,8 @@ def _grid_from_whitespace(
 
     height, width = gray.shape
 
-    # Ensure boundary sentinels
-    if not h_positions or h_positions[0] > 5:
-        h_positions = [0] + h_positions
-    if not h_positions or h_positions[-1] < height - 5:
-        h_positions = h_positions + [height]
-    if not v_positions or v_positions[0] > 5:
-        v_positions = [0] + v_positions
-    if not v_positions or v_positions[-1] < width - 5:
-        v_positions = v_positions + [width]
+    h_positions = _add_boundary_sentinels(h_positions, height)
+    v_positions = _add_boundary_sentinels(v_positions, width)
 
     cells: list[CellRegion] = []
     for r, (y_top, y_bot) in enumerate(zip(h_positions, h_positions[1:])):
@@ -287,17 +333,125 @@ def _grid_from_whitespace(
     return TableGrid(cells=cells, header_rows=1)
 
 
+# ---------------------------------------------------------------------------
+# Projection-profile–based fallback (robust for scanned documents)
+# ---------------------------------------------------------------------------
+
+
+def _grid_from_projection(
+    gray: np.ndarray,
+    debug: bool = False,
+) -> TableGrid:
+    """Detect columns and rows using projection-profile valley analysis.
+
+    This is a more robust alternative to the whitespace separator approach
+    for scanned documents where ink bleeds slightly into gap areas.
+
+    Algorithm:
+    1. Compute the dark-pixel count per column (vertical projection).
+    2. Smooth the projection with a running-mean kernel.
+    3. Detect local valleys below ``_VALLEY_THRESHOLD_RATIO`` of the peak.
+    4. Use the valley centres as column-boundary positions.
+    5. Repeat for rows.
+    """
+    height, width = gray.shape
+
+    v_positions = _projection_valleys(gray, axis=0)
+    h_positions = _projection_valleys(gray, axis=1)
+
+    h_positions = _add_boundary_sentinels(h_positions, height)
+    v_positions = _add_boundary_sentinels(v_positions, width)
+
+    cells: list[CellRegion] = []
+    for r, (y_top, y_bot) in enumerate(zip(h_positions, h_positions[1:])):
+        for c, (x_left, x_right) in enumerate(zip(v_positions, v_positions[1:])):
+            cells.append(
+                CellRegion(
+                    row=r,
+                    col=c,
+                    bbox=(x_left, y_top, x_right, y_bot),
+                )
+            )
+
+    n_rows = len(h_positions) - 1
+    if debug:
+        logger.debug(
+            "Projection-valley grid: %d rows × %d cols",
+            n_rows,
+            len(v_positions) - 1,
+        )
+
+    return TableGrid(cells=cells, header_rows=1)
+
+
+def _projection_valleys(
+    gray: np.ndarray,
+    axis: int,
+    threshold_ratio: float = _VALLEY_THRESHOLD_RATIO,
+) -> list[int]:
+    """Find valley positions in the ink-density projection along *axis*.
+
+    axis=0 → vertical projection (sum per column) → x positions (column gaps)
+    axis=1 → horizontal projection (sum per row) → y positions (row gaps)
+
+    Returns a sorted list of gap-centre positions.
+    """
+    projection = (gray < 200).sum(axis=axis).astype(float)
+    if projection.max() == 0:
+        return []
+
+    # Smooth to reduce single-pixel noise; window = ~3% of dimension but ≥5.
+    # A wider window suppresses noise in the gap regions on scanned documents.
+    n = len(projection)
+    win = max(5, n // 30)
+    kernel = np.ones(win, dtype=float) / win
+    smoothed = np.convolve(projection, kernel, mode="same")
+
+    peak = smoothed.max()
+    threshold = peak * threshold_ratio
+
+    is_valley = smoothed <= threshold
+
+    # Require a minimum gap width to filter out sub-pixel noise spikes
+    min_gap = max(5, n // _VALLEY_MIN_GAP_DIVISOR)
+
+    valleys: list[int] = []
+    in_valley = False
+    v_start = 0
+    for i, val in enumerate(is_valley):
+        if val and not in_valley:
+            in_valley = True
+            v_start = i
+        elif not val and in_valley:
+            in_valley = False
+            if (i - v_start) >= min_gap:
+                valleys.append((v_start + i) // 2)
+    if in_valley and (n - v_start) >= min_gap:
+        valleys.append((v_start + n) // 2)
+
+    return valleys
+
+
 def _whitespace_separators(gray: np.ndarray, axis: int) -> list[int]:
-    """Find separator positions by looking for all-white stripes.
+    """Find separator positions by looking for low-ink-density stripes.
 
     axis=0 → scan columns (find vertical separators → x positions)
     axis=1 → scan rows    (find horizontal separators → y positions)
+
+    Uses a density threshold (≤ ``_WHITESPACE_DENSITY_RATIO`` of the peak
+    ink density) rather than requiring completely empty stripes.  This
+    handles scanned documents where even blank areas contain minor noise.
     """
     # Project to find dark-pixel counts per row/column
-    projection = (gray < 200).sum(axis=axis)
-    is_empty = projection == 0
+    projection = (gray < 200).sum(axis=axis).astype(float)
+    peak = projection.max()
+    if peak == 0:
+        return []
 
-    # Cluster consecutive empty rows/cols into single separator positions
+    threshold = max(peak * _WHITESPACE_DENSITY_RATIO, _MIN_WHITESPACE_THRESHOLD)
+    is_empty = projection <= threshold
+
+    # Cluster consecutive low-density rows/cols into single separator positions
     separators: list[int] = []
     in_gap = False
     gap_start = 0
@@ -307,8 +461,10 @@ def _whitespace_separators(gray: np.ndarray, axis: int) -> list[int]:
             gap_start = i
         elif not empty and in_gap:
             in_gap = False
-            if (i - gap_start) >= 3:  # require at least 3px gap
+            if (i - gap_start) >= 2:  # require at least 2px gap
                 separators.append((gap_start + i) // 2)
+    if in_gap and (len(is_empty) - gap_start) >= 2:
+        separators.append((gap_start + len(is_empty)) // 2)
     return separators
 
 
