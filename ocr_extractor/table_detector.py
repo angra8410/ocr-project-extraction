@@ -31,10 +31,13 @@ _WHITESPACE_DENSITY_RATIO: float = 0.05
 _MIN_WHITESPACE_THRESHOLD: float = 2.0
 
 # Projection valley: fraction of peak density below which a stripe is a valley.
-_VALLEY_THRESHOLD_RATIO: float = 0.20
+# Increased from 0.20 to 0.35 to better detect column gaps in tables where
+# ruling lines are present or text bleeds into gaps slightly.
+_VALLEY_THRESHOLD_RATIO: float = 0.35
 # Minimum valley width as a fraction of the image dimension (keeps false
 # positives caused by sub-pixel noise from being promoted to column/row gaps).
-_VALLEY_MIN_GAP_DIVISOR: int = 50
+# Reduced from 50 to 200 to allow detection of much narrower column gaps in tables.
+_VALLEY_MIN_GAP_DIVISOR: int = 200
 
 
 # ---------------------------------------------------------------------------
