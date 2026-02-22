@@ -15,7 +15,9 @@ single-sheet workbook that mimics the output style of jpgtoexcel.com:
 from __future__ import annotations
 
 import logging
+import os
 import re
+import tempfile
 from pathlib import Path
 from typing import List
 
@@ -31,6 +33,10 @@ from openpyxl.styles import (
 from openpyxl.utils import get_column_letter
 
 from .table_detector import CellRegion, TableGrid
+
+
+class ExcelWriteError(OSError):
+    """Raised when the workbook cannot be saved to *output_path*."""
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +80,7 @@ def write_xlsx(grid: TableGrid, output_path: str | Path) -> Path:
     ws.title = "Table"
 
     if not grid.cells:
-        wb.save(output_path)
+        _atomic_save(wb, output_path)
         return output_path.resolve()
 
     num_cols = grid.num_cols
@@ -89,7 +95,7 @@ def write_xlsx(grid: TableGrid, output_path: str | Path) -> Path:
     # 3. Set column widths proportional to bounding-box widths
     _set_column_widths(ws, grid, num_cols)
 
-    wb.save(output_path)
+    _atomic_save(wb, output_path)
     logger.info("Wrote %s", output_path)
     return output_path.resolve()
 
@@ -97,6 +103,42 @@ def write_xlsx(grid: TableGrid, output_path: str | Path) -> Path:
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+
+def _atomic_save(wb: Workbook, output_path: Path) -> None:
+    """Save *wb* to *output_path* using an atomic write-then-replace pattern.
+
+    Writes to a sibling ``.tmp`` file first, then replaces the target.
+    This prevents partial writes from corrupting an existing file.
+
+    Raises :class:`ExcelWriteError` with an actionable message when the save
+    fails due to a permission or locking problem.
+    """
+    tmp_path = output_path.parent / f"{output_path.name}.tmp"
+    try:
+        wb.save(tmp_path)
+        os.replace(tmp_path, output_path)
+    except PermissionError as exc:
+        # Clean up the temp file if it was created
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        suggestions = [
+            f"  • Close '{output_path.name}' in Excel if it is open.",
+            f"  • Choose a different output path (current: {output_path}).",
+            "  • Check that the directory is writable and not read-only.",
+        ]
+        raise ExcelWriteError(
+            f"Cannot write '{output_path}': permission denied.\n"
+            + "\n".join(suggestions)
+        ) from exc
+    except Exception:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
 
 
 def _write_cells(ws, grid: TableGrid) -> None:  # type: ignore[type-arg]

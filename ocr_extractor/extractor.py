@@ -13,6 +13,7 @@ Orchestrates the full conversion flow:
 from __future__ import annotations
 
 import logging
+import os
 import tempfile
 from pathlib import Path
 from typing import List, Optional
@@ -67,6 +68,13 @@ def extract(
         output_path = input_path.with_suffix(".xlsx")
     output_path = Path(output_path)
 
+    # Validate the output directory exists and is writable
+    out_dir = output_path.parent
+    if not out_dir.exists():
+        raise FileNotFoundError(f"Output directory does not exist: {out_dir}")
+    if not os.access(out_dir, os.W_OK):
+        raise PermissionError(f"Output directory is not writable: {out_dir}")
+
     ext = input_path.suffix.lower()
     if ext == _PDF_EXT:
         images = _load_pdf(input_path, debug=debug)
@@ -86,6 +94,7 @@ def extract(
 
     if debug:
         _save_debug_preview(images, combined_grid, output_path)
+        _save_debug_artifacts(input_path, combined_grid, output_path)
 
     write_xlsx(combined_grid, output_path)
     return output_path.resolve()
@@ -253,3 +262,161 @@ def _save_debug_preview(
         logger.info("Debug preview saved to %s", preview_path)
     except Exception as exc:  # noqa: BLE001
         logger.warning("Could not save debug preview: %s", exc)
+
+
+# ---------------------------------------------------------------------------
+# Debug text artifacts
+# ---------------------------------------------------------------------------
+
+
+def _save_debug_artifacts(
+    input_path: Path,
+    grid: TableGrid,
+    output_path: Path,
+) -> None:
+    """Write ``pipeline_diagram.md`` and ``grid_preview.txt`` to a debug folder.
+
+    The debug folder is created next to the output file as
+    ``<output_stem>.debug/``.
+    """
+    try:
+        debug_dir = output_path.parent / f"{output_path.stem}.debug"
+        debug_dir.mkdir(parents=True, exist_ok=True)
+
+        merged_cells = [c for c in grid.cells if c.is_merged]
+        low_conf_cells = [c for c in grid.cells if c.low_confidence]
+
+        # ------------------------------------------------------------------ #
+        # pipeline_diagram.md
+        # ------------------------------------------------------------------ #
+        diagram_path = debug_dir / "pipeline_diagram.md"
+        diagram_lines = [
+            "# OCR Extraction Pipeline Diagram",
+            "",
+            "```",
+            f"  INPUT  ─────────────────────────────────────────────────",
+            f"  File   : {input_path}",
+            f"  ┌──────────────────────────────────────────────────────┐",
+            f"  │ 1. Preprocessing (grayscale, denoise, threshold)     │",
+            f"  └───────────────────────┬──────────────────────────────┘",
+            f"                          ▼",
+            f"  ┌──────────────────────────────────────────────────────┐",
+            f"  │ 2. Table Detection (ruling lines / projection)       │",
+            f"  │    columns detected : {grid.num_cols:<6}                      │",
+            f"  │    rows    detected : {grid.num_rows:<6}                      │",
+            f"  └───────────────────────┬──────────────────────────────┘",
+            f"                          ▼",
+            f"  ┌──────────────────────────────────────────────────────┐",
+            f"  │ 3. OCR (pytesseract per cell)                        │",
+            f"  │    total cells  : {len(grid.cells):<6}                        │",
+            f"  │    low-conf     : {len(low_conf_cells):<6}                        │",
+            f"  └───────────────────────┬──────────────────────────────┘",
+            f"                          ▼",
+            f"  ┌──────────────────────────────────────────────────────┐",
+            f"  │ 4. Header / Merge Detection                          │",
+            f"  │    header rows  : {grid.header_rows:<6}                        │",
+            f"  │    merged cells : {len(merged_cells):<6}                        │",
+            f"  └───────────────────────┬──────────────────────────────┘",
+            f"                          ▼",
+            f"  ┌──────────────────────────────────────────────────────┐",
+            f"  │ 5. XLSX Write                                        │",
+            f"  │    sheet name   : Table                              │",
+            f"  │    output       : {output_path.name:<34}│",
+            f"  └──────────────────────────────────────────────────────┘",
+            "```",
+            "",
+            "## Metrics",
+            "",
+            f"| Metric | Value |",
+            f"|--------|-------|",
+            f"| Input file | `{input_path.name}` |",
+            f"| Columns | {grid.num_cols} |",
+            f"| Rows | {grid.num_rows} |",
+            f"| Header rows | {grid.header_rows} |",
+            f"| Total cells | {len(grid.cells)} |",
+            f"| Merged cells | {len(merged_cells)} |",
+            f"| Low-confidence cells | {len(low_conf_cells)} |",
+            "",
+        ]
+        if merged_cells:
+            diagram_lines += [
+                "## Merged Cell Ranges",
+                "",
+            ]
+            from openpyxl.utils import get_column_letter  # noqa: PLC0415
+
+            for mc in merged_cells:
+                start_col = get_column_letter(mc.col + 1)
+                end_col = get_column_letter(mc.col + mc.colspan)
+                start_row = mc.row + 1
+                end_row = mc.row + mc.rowspan
+                addr = f"{start_col}{start_row}:{end_col}{end_row}"
+                diagram_lines.append(f"- `{addr}` — row={mc.row}, col={mc.col}, text={mc.text!r}")
+            diagram_lines.append("")
+
+        diagram_path.write_text("\n".join(diagram_lines), encoding="utf-8")
+        logger.info("Debug diagram saved to %s", diagram_path)
+
+        # ------------------------------------------------------------------ #
+        # grid_preview.txt
+        # ------------------------------------------------------------------ #
+        _write_grid_preview(debug_dir / "grid_preview.txt", grid)
+
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not save debug artifacts: %s", exc)
+
+
+def _write_grid_preview(
+    preview_path: Path,
+    grid: TableGrid,
+    max_rows: int = 15,
+    max_cols: int = 12,
+) -> None:
+    """Write a monospaced grid preview showing first *max_rows* rows."""
+    if not grid.cells:
+        preview_path.write_text("(empty grid)\n", encoding="utf-8")
+        return
+
+    n_rows = min(grid.num_rows, max_rows)
+    n_cols = min(grid.num_cols, max_cols)
+
+    # Build a 2-D text grid
+    text_grid: list[list[str]] = [[""] * n_cols for _ in range(n_rows)]
+    for cell in grid.cells:
+        if cell.row < n_rows and cell.col < n_cols:
+            text_grid[cell.row][cell.col] = cell.text
+
+    # Compute column widths
+    col_widths = [8] * n_cols
+    for r in range(n_rows):
+        for c in range(n_cols):
+            col_widths[c] = max(col_widths[c], len(text_grid[r][c]))
+    col_widths = [min(w, 25) for w in col_widths]
+
+    def _row_sep(char: str = "-") -> str:
+        return "+" + "+".join(char * (w + 2) for w in col_widths) + "+"
+
+    def _row_line(row_idx: int, label: str = "") -> str:
+        cells = []
+        for c in range(n_cols):
+            val = text_grid[row_idx][c][:col_widths[c]]
+            cells.append(f" {val:<{col_widths[c]}} ")
+        prefix = f"[{label}]" if label else f"[{row_idx:>3}]"
+        return f"{prefix} |" + "|".join(cells) + "|"
+
+    lines = [
+        f"Grid Preview  ({grid.num_rows} rows × {grid.num_cols} cols, "
+        f"showing first {n_rows}×{n_cols})",
+        f"Header rows: {grid.header_rows}",
+        "",
+        _row_sep("="),
+    ]
+    for r in range(n_rows):
+        label = "HDR" if r < grid.header_rows else f"{r:>3}"
+        lines.append(_row_line(r, label))
+        sep_char = "=" if r == grid.header_rows - 1 else "-"
+        lines.append(_row_sep(sep_char))
+
+    lines.append("")
+    preview_path.write_text("\n".join(lines), encoding="utf-8")
+    logger.info("Grid preview saved to %s", preview_path)

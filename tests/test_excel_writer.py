@@ -1,12 +1,15 @@
 """Unit tests for the Excel writer module."""
 
+import os
+import sys
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from openpyxl import load_workbook
 
-from ocr_extractor.excel_writer import _flag_low_confidence, write_xlsx
+from ocr_extractor.excel_writer import ExcelWriteError, _flag_low_confidence, write_xlsx
 from ocr_extractor.table_detector import CellRegion, TableGrid
 
 
@@ -133,3 +136,36 @@ class TestWriteXlsx:
         ws = wb.active
         for col_letter in ("A", "B", "C"):
             assert ws.column_dimensions[col_letter].width > 0
+
+
+# ---------------------------------------------------------------------------
+# Atomic save / PermissionError
+# ---------------------------------------------------------------------------
+
+
+class TestAtomicSave:
+    def test_no_tmp_file_left_on_success(self, tmp_path):
+        """After a successful write the .tmp file must not remain."""
+        grid = _simple_grid()
+        out = tmp_path / "out.xlsx"
+        write_xlsx(grid, out)
+        tmp_file = tmp_path / "out.xlsx.tmp"
+        assert not tmp_file.exists(), ".tmp file was not cleaned up after successful save"
+
+    def test_permission_error_raises_excel_write_error(self, tmp_path):
+        """A PermissionError from os.replace must become ExcelWriteError."""
+        grid = _simple_grid()
+        out = tmp_path / "locked.xlsx"
+        with patch("os.replace", side_effect=PermissionError("Access denied")):
+            with pytest.raises(ExcelWriteError, match="permission denied"):
+                write_xlsx(grid, out)
+
+    def test_excel_write_error_message_is_actionable(self, tmp_path):
+        """ExcelWriteError message must mention closing Excel or choosing a path."""
+        grid = _simple_grid()
+        out = tmp_path / "locked.xlsx"
+        with patch("os.replace", side_effect=PermissionError("Access denied")):
+            with pytest.raises(ExcelWriteError) as exc_info:
+                write_xlsx(grid, out)
+        msg = str(exc_info.value)
+        assert "Excel" in msg or "output path" in msg.lower() or "writable" in msg.lower()

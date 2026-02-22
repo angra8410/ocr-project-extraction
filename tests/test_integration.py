@@ -6,7 +6,6 @@ that the output .xlsx has the expected structure and content.
 
 from __future__ import annotations
 
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -22,6 +21,7 @@ from ocr_extractor.extractor import extract
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 SAMPLE_TABLE = FIXTURES_DIR / "sample_table.png"
+TEST_PDF = FIXTURES_DIR / "test.pdf"
 
 
 def _make_table_image(
@@ -53,23 +53,6 @@ def _make_table_image(
             draw.text((x, y), text, fill="black")
 
     return img
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _extract_to_tmp(src: Path) -> Path:
-    with tempfile.TemporaryDirectory() as tmpdir:
-        out = Path(tmpdir) / "result.xlsx"
-        result = extract(str(src), str(out))
-        # Copy to a persistent tmp path so callers can open it
-        import shutil
-
-        persist = src.with_suffix(".test_output.xlsx")
-        shutil.copy(str(result), str(persist))
-        return persist
 
 
 # ---------------------------------------------------------------------------
@@ -185,3 +168,76 @@ class TestExtractSyntheticTable:
         assert any(keyword in all_text for keyword in ("name", "amount", "date", "alice", "bob")), (
             f"No expected keywords found in extracted text. Got: {all_values}"
         )
+
+
+
+# ---------------------------------------------------------------------------
+# PDF integration tests (uses tests/fixtures/test.pdf)
+# ---------------------------------------------------------------------------
+
+# Skip the whole class if pdfplumber cannot open the fixture (e.g. in very
+# restricted CI environments).  The PDF fixture is a PIL-generated single-page
+# image-based PDF, so no special renderer is needed beyond pdfplumber.
+_pdf_available = TEST_PDF.exists()
+
+
+@pytest.mark.skipif(not _pdf_available, reason="tests/fixtures/test.pdf not found")
+class TestPdfIntegration:
+    """Integration tests that use tests/fixtures/test.pdf as input.
+
+    Output is always written to pytest's tmp_path – never to the fixtures dir.
+    """
+
+    def test_pdf_output_written_to_tmp(self, tmp_path):
+        """Output .xlsx must be created inside tmp_path, not in fixtures."""
+        out = tmp_path / "test_output.xlsx"
+        result = extract(str(TEST_PDF), str(out))
+        result_path = Path(result)
+        assert result_path.exists()
+        # Crucially, the output must NOT be inside the fixtures directory
+        assert not result_path.is_relative_to(FIXTURES_DIR), (
+            f"Output was written to fixtures dir: {result_path}"
+        )
+        assert result_path.is_relative_to(tmp_path)
+
+    def test_pdf_sheet_named_table(self, tmp_path):
+        """The generated workbook must have exactly one sheet named 'Table'."""
+        out = tmp_path / "test_output.xlsx"
+        result = extract(str(TEST_PDF), str(out))
+        wb = load_workbook(str(result))
+        assert wb.sheetnames == ["Table"]
+
+    def test_pdf_has_rows_and_columns(self, tmp_path):
+        """The workbook must have at least 1 row and 1 column."""
+        out = tmp_path / "test_output.xlsx"
+        result = extract(str(TEST_PDF), str(out))
+        wb = load_workbook(str(result))
+        ws = wb.active
+        assert ws.max_row >= 1
+        assert ws.max_column >= 1
+
+    def test_pdf_debug_artifacts_created(self, tmp_path):
+        """Debug mode must create pipeline_diagram.md and grid_preview.txt."""
+        out = tmp_path / "test_output.xlsx"
+        result = extract(str(TEST_PDF), str(out), debug=True)
+        debug_dir = tmp_path / "test_output.debug"
+        assert debug_dir.exists(), f"Debug dir not found: {debug_dir}"
+        diagram = debug_dir / "pipeline_diagram.md"
+        preview = debug_dir / "grid_preview.txt"
+        assert diagram.exists(), "pipeline_diagram.md not generated"
+        assert preview.exists(), "grid_preview.txt not generated"
+        # Check diagram has meaningful content
+        content = diagram.read_text(encoding="utf-8")
+        assert "Pipeline" in content
+        assert "Header rows" in content or "header rows" in content.lower()
+        # Check preview has meaningful content
+        preview_content = preview.read_text(encoding="utf-8")
+        assert "Grid Preview" in preview_content or "HDR" in preview_content
+
+    def test_pdf_debug_artifacts_in_tmp_not_fixtures(self, tmp_path):
+        """Debug artifacts must be written to tmp_path, not fixtures dir."""
+        out = tmp_path / "test_output.xlsx"
+        extract(str(TEST_PDF), str(out), debug=True)
+        debug_dir = tmp_path / "test_output.debug"
+        assert debug_dir.exists()
+        assert not debug_dir.is_relative_to(FIXTURES_DIR)
