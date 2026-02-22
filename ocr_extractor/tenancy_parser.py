@@ -842,7 +842,7 @@ def export_tenancy_to_html(
 
     if output_path is not None:
         output_path = Path(output_path)
-        output_path.write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
+        output_path.write_text(html_table, encoding="utf-8")
         logger.info(
             "Wrote tenancy HTML table to %s (%d rows, %d columns)",
             output_path,

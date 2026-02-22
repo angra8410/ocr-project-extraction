@@ -543,20 +543,28 @@ class TestExportTenancyToHtml:
         assert "&lt;Acme &amp; Sons&gt;" in html_table
         assert "&quot;hello&quot;" in html_table
 
-    def test_writes_json_file_when_output_path_given(self, tmp_path):
-        output_path = tmp_path / "output.json"
+    def test_writes_html_file_when_output_path_given(self, tmp_path):
+        output_path = tmp_path / "output.html"
         export_tenancy_to_html(self._make_rows(), output_path=output_path)
         assert output_path.exists()
-        data = json.loads(output_path.read_text(encoding="utf-8"))
-        assert "html_table" in data
-        assert "reasoning" in data
+        content = output_path.read_text(encoding="utf-8")
+        assert "<table>" in content
+        assert "<thead>" in content
+        # All 15 required schema columns must be present
+        for col in HTML_SCHEMA_COLUMNS:
+            assert f"<th>{col}</th>" in content, f"Column '{col}' missing from header"
 
-    def test_json_file_is_valid_json(self, tmp_path):
-        output_path = tmp_path / "output.json"
+    def test_html_file_contains_table_string(self, tmp_path):
+        output_path = tmp_path / "output.html"
         export_tenancy_to_html(self._make_rows(), output_path=output_path)
         content = output_path.read_text(encoding="utf-8")
-        parsed = json.loads(content)
-        assert isinstance(parsed["html_table"], str)
+        assert content.strip().startswith("<table>")
+        assert content.strip().endswith("</table>")
+        # Data from _make_rows() must appear in the output
+        assert "Cornet Axol" in content
+        assert "Horizon Builders, LLC" in content
+        assert "lease_summary" in content
+        assert "CAM" in content
 
     def test_empty_rows_produces_valid_html(self):
         result = export_tenancy_to_html([])

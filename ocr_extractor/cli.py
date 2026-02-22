@@ -15,7 +15,7 @@ def _build_parser() -> argparse.ArgumentParser:
         prog="ocr-extract",
         description=(
             "Convert .jpg/.jpeg/.png/.tif/.tiff/.pdf files into a "
-            "layout-preserving .xlsx that reconstructs the table structure."
+            "layout-preserving output file that reconstructs the table structure."
         ),
     )
     parser.add_argument(
@@ -29,8 +29,9 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="OUTPUT",
         default=None,
         help=(
-            "Path for the output .xlsx file. "
-            "Defaults to INPUT with the .xlsx extension."
+            "Path for the output file. "
+            "Defaults to INPUT with the .html extension when --tenancy-mode is used "
+            "(or --format html), otherwise .xlsx."
         ),
     )
     parser.add_argument(
@@ -55,9 +56,9 @@ def _build_parser() -> argparse.ArgumentParser:
         default=False,
         help=(
             "Enable tenancy schedule parsing mode. "
-            "This mode uses specialized parsing for real estate lease documents "
-            "with fields like Property, Tenant, Suite, Lease dates, Area, Rent, etc. "
-            "Outputs a normalized multi-column Excel file with proper data types."
+            "Uses specialized parsing for real estate lease documents with fields like "
+            "Property, Tenant, Suite, Lease dates, Area, Rent, etc. "
+            "Outputs a clean HTML <table> (implies --format html)."
         ),
     )
     parser.add_argument(
@@ -66,9 +67,10 @@ def _build_parser() -> argparse.ArgumentParser:
         default="xlsx",
         dest="output_format",
         help=(
-            "Output format. 'xlsx' (default) writes a .xlsx file. "
-            "'html' writes a .json file containing an HTML <table> and a "
-            "reasoning block (use with --tenancy-mode)."
+            "Output format. 'xlsx' writes a .xlsx file. "
+            "'html' writes an .html file containing a clean HTML <table> "
+            "with normalized tenancy schedule data (implies --tenancy-mode). "
+            "When --tenancy-mode is specified, defaults to 'html'."
         ),
     )
     return parser

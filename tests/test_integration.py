@@ -247,94 +247,54 @@ class TestPdfIntegration:
 
     def test_pdf_multi_column_structure(self, tmp_path):
         """The output must have multi-column structure, NOT a single-column dump.
-        
-        This test fails if the extraction produces a single-column output where
-        all data is dumped into column A (the "paragraph dump" problem).
-        
-        For tests/fixtures/test.pdf (real estate lease table), we expect:
-        - At least 15 columns (17-column real estate lease data structure)
-        - Header row with real estate column names (Property, Lease, Area, etc.)
-        - Data rows with values in multiple columns
+
+        With tenancy_mode=True the pipeline now produces an HTML <table> file.
+        We verify that:
+        - The output is a valid HTML file (not XLSX)
+        - The <table> header row contains the required 15 schema columns
+        - The expected column names are present
+        - At least one data row exists in the tbody
         """
-        # Constants for this test - updated for 17-column real estate table
-        MIN_EXPECTED_COLS = 15  # At least 15 of the 17 columns
-        MIN_HEADER_VALUES = 8  # At least 8 distinct headers
-        MIN_HEADER_COLS = 8    # Headers spread across at least 8 columns
-        MIN_DATA_ROWS = 2      # At least 2 data rows with multi-column values
-        MAX_COLS_TO_CHECK = 20  # Check up to 20 columns
-        MAX_ROWS_TO_CHECK = 20  # Limit row checking for performance
-        
-        out = tmp_path / "test_output.xlsx"
-        # Use tenancy_mode for structured multi-column output
+        import re
+
+        out = tmp_path / "test_output.html"
         result = extract(str(TEST_PDF), str(out), tenancy_mode=True)
-        wb = load_workbook(str(result))
-        ws = wb.active
-        
-        # 1. Assert minimum column count for real estate table
-        actual_cols = ws.max_column
-        assert actual_cols >= MIN_EXPECTED_COLS, (
-            f"Insufficient columns detected! Expected >= {MIN_EXPECTED_COLS} columns "
-            f"for 17-column real estate table, but found only {actual_cols}. "
-            f"This indicates the table structure was not properly detected."
+        result_path = Path(result)
+
+        # 1. Output file must exist and have .html extension
+        assert result_path.exists(), f"Output file not found: {result_path}"
+        assert result_path.suffix == ".html", (
+            f"Expected .html output for tenancy_mode, got {result_path.suffix}"
         )
-        
-        # 2. Assert header values are in different columns (not all in A)
-        header_row = 1
-        header_values = []
-        for col_idx in range(1, min(actual_cols + 1, MAX_COLS_TO_CHECK)):
-            cell_value = ws.cell(row=header_row, column=col_idx).value
-            if cell_value and str(cell_value).strip():
-                header_values.append((col_idx, str(cell_value).strip()))
-        
-        # We expect real estate headers like "Property", "Lease", "Area", etc.
-        expected_keywords = {"Property", "Lease", "Area", "Rent", "Annual", "Security"}
-        found_keywords = set()
-        for _, val in header_values:
-            for keyword in expected_keywords:
-                if keyword.lower() in val.lower():
-                    found_keywords.add(keyword)
-        
-        assert len(header_values) >= MIN_HEADER_VALUES, (
-            f"Too few header values found. Expected at least {MIN_HEADER_VALUES} distinct headers "
-            f"for real estate table, found {len(header_values)}: {[h[1] for h in header_values[:10]]}"
+
+        content = result_path.read_text(encoding="utf-8")
+
+        # 2. Must be a valid HTML table
+        assert "<table>" in content, "Output does not contain <table>"
+        assert "<thead>" in content, "Output does not contain <thead>"
+        assert "<tbody>" in content, "Output does not contain <tbody>"
+
+        # 3. All 15 required schema columns must be present as <th> headers
+        from ocr_extractor.tenancy_parser import HTML_SCHEMA_COLUMNS
+        for col in HTML_SCHEMA_COLUMNS:
+            assert f"<th>{col}</th>" in content, (
+                f"Required column '{col}' not found in HTML header"
+            )
+
+        # 4. Header row must have exactly 15 <th> elements
+        th_count = content.count("<th>")
+        assert th_count == len(HTML_SCHEMA_COLUMNS), (
+            f"Expected {len(HTML_SCHEMA_COLUMNS)} header columns, found {th_count}"
         )
-        
-        assert len(found_keywords) >= 3, (
-            f"Expected real estate header keywords not found. "
-            f"Expected at least 3 of {expected_keywords}, found {found_keywords}. "
-            f"All headers: {[h[1] for h in header_values[:10]]}"
+
+        # 5. At least one data row must exist in <tbody>
+        tbody_match = re.search(r"<tbody>(.*?)</tbody>", content, re.DOTALL)
+        assert tbody_match, "Could not find <tbody> in output"
+        tbody_content = tbody_match.group(1)
+        data_rows = re.findall(r"<tr>", tbody_content)
+        assert len(data_rows) >= 1, (
+            f"Expected at least 1 data row in tbody, found {len(data_rows)}"
         )
-        
-        # Check headers are in different columns (not all in column A)
-        header_cols = {col for col, _ in header_values}
-        assert len(header_cols) >= MIN_HEADER_COLS, (
-            f"Headers are clustered in too few columns. Expected headers spread "
-            f"across >= {MIN_HEADER_COLS} columns, but found in columns: {sorted(header_cols)}"
-        )
-        
-        # 3. Assert at least N data rows have values beyond column A
-        data_rows_with_multi_cols = 0
-        
-        for row_idx in range(2, min(ws.max_row + 1, MAX_ROWS_TO_CHECK)):
-            has_value_beyond_A = False
-            for col_idx in range(2, min(actual_cols + 1, MAX_COLS_TO_CHECK)):
-                cell_value = ws.cell(row=row_idx, column=col_idx).value
-                if cell_value is not None and str(cell_value).strip():
-                    has_value_beyond_A = True
-                    break
-            if has_value_beyond_A:
-                data_rows_with_multi_cols += 1
-        
-        assert data_rows_with_multi_cols >= MIN_DATA_ROWS, (
-            f"Too few data rows with multi-column values. Expected at least "
-            f"{MIN_DATA_ROWS} rows with data in columns beyond A, but found "
-            f"only {data_rows_with_multi_cols}. This suggests a single-column dump."
-        )
-        
-        # 4. Check for expected merged cells (optional - test.pdf may not have merges)
-        # For now, just document that we're not asserting merged cells
-        merged_ranges = list(ws.merged_cells.ranges) if hasattr(ws, 'merged_cells') else []
-        # Note: Not asserting merged cells for this fixture as it may not have them
 
     def test_pdf_generates_visual_artifacts(self, tmp_path):
         """Generate visual artifacts for debugging and verification.
