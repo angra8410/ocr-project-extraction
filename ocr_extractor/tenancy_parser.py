@@ -17,6 +17,8 @@ The parser handles:
 
 from __future__ import annotations
 
+import html
+import json
 import logging
 import re
 from dataclasses import dataclass, field
@@ -49,13 +51,36 @@ TENANCY_SCHEDULE_COLUMNS = [
     "lease_to",
     "term_months",
     "area_sqft",
+    "charge_label",
+    "period_from",
+    "period_to",
     "monthly_amount",
     "annual_amount",
+    "management_fee_rate",
     "security_deposit",
     "loc_amount",
     "notes",
     "row_type",
     "warnings",
+]
+
+# Ordered columns for the HTML table output (spec-mandated order)
+HTML_SCHEMA_COLUMNS = [
+    "property",
+    "as_of_date",
+    "row_type",
+    "tenant_name",
+    "suite",
+    "lease_from",
+    "lease_to",
+    "area_sqft",
+    "charge_label",
+    "period_from",
+    "period_to",
+    "monthly_amount",
+    "annual_amount",
+    "management_fee_rate",
+    "notes",
 ]
 
 # Row type constants
@@ -64,6 +89,17 @@ ROW_TYPE_RENT_STEP = "rent_step"
 ROW_TYPE_CHARGE_SCHEDULE = "charge_schedule"
 ROW_TYPE_OCCUPANCY_SUMMARY = "occupancy_summary"
 ROW_TYPE_HEADER = "header"
+
+# Numeric columns used for right-alignment in Excel output
+_NUMERIC_EXCEL_COLUMNS = frozenset([
+    "term_months",
+    "area_sqft",
+    "monthly_amount",
+    "annual_amount",
+    "management_fee_rate",
+    "security_deposit",
+    "loc_amount",
+])
 
 
 # ---------------------------------------------------------------------------
@@ -85,8 +121,12 @@ class TenancyRow:
     lease_to: Optional[str] = None
     term_months: Optional[float] = None
     area_sqft: Optional[float] = None
+    charge_label: Optional[str] = None
+    period_from: Optional[str] = None
+    period_to: Optional[str] = None
     monthly_amount: Optional[float] = None
     annual_amount: Optional[float] = None
+    management_fee_rate: Optional[float] = None
     security_deposit: Optional[float] = None
     loc_amount: Optional[float] = None
     notes: Optional[str] = None
@@ -106,8 +146,12 @@ class TenancyRow:
             "lease_to": self.lease_to,
             "term_months": self.term_months,
             "area_sqft": self.area_sqft,
+            "charge_label": self.charge_label,
+            "period_from": self.period_from,
+            "period_to": self.period_to,
             "monthly_amount": self.monthly_amount,
             "annual_amount": self.annual_amount,
+            "management_fee_rate": self.management_fee_rate,
             "security_deposit": self.security_deposit,
             "loc_amount": self.loc_amount,
             "notes": self.notes,
@@ -290,8 +334,12 @@ def _detect_header_mapping(grid: TableGrid, cell_map: dict) -> dict[str, int]:
         "lease_to": ["to", "end", "expiration", "expire", "expiry"],
         "term_months": ["term", "months", "duration"],
         "area_sqft": ["area", "sqft", "sf", "square"],
+        "charge_label": ["charge", "charge label", "charge type"],
+        "period_from": ["period from", "period start"],
+        "period_to": ["period to", "period end"],
         "monthly_amount": ["monthly", "month", "rent/month"],
         "annual_amount": ["annual", "year", "rent/year"],
+        "management_fee_rate": ["management fee", "mgmt fee", "management"],
         "security_deposit": ["security", "deposit"],
         "loc_amount": ["loc", "letter", "credit"],
     }
@@ -333,8 +381,12 @@ def _create_fallback_header_mapping(num_cols: int) -> dict[str, int]:
         "lease_from",
         "lease_to",
         "area_sqft",
+        "charge_label",
+        "period_from",
+        "period_to",
         "monthly_amount",
         "annual_amount",
+        "management_fee_rate",
         "security_deposit",
         "loc_amount",
         "notes",
@@ -388,6 +440,9 @@ def _extract_row_data(
     if "lease_type" in header_map:
         tenancy_row.lease_type = get_cell_text(header_map["lease_type"]) or None
 
+    if "charge_label" in header_map:
+        tenancy_row.charge_label = get_cell_text(header_map["charge_label"]) or None
+
     if "notes" in header_map:
         tenancy_row.notes = get_cell_text(header_map["notes"]) or None
 
@@ -412,12 +467,33 @@ def _extract_row_data(
                 tenancy_row.lease_to = raw_to
                 tenancy_row.warnings.append(f"Could not parse date: {raw_to}")
 
+    if "period_from" in header_map:
+        raw_period_from = get_cell_text(header_map["period_from"])
+        if raw_period_from:
+            normalized = normalize_date(raw_period_from)
+            if normalized:
+                tenancy_row.period_from = normalized
+            else:
+                tenancy_row.period_from = raw_period_from
+                tenancy_row.warnings.append(f"Could not parse date: {raw_period_from}")
+
+    if "period_to" in header_map:
+        raw_period_to = get_cell_text(header_map["period_to"])
+        if raw_period_to:
+            normalized = normalize_date(raw_period_to)
+            if normalized:
+                tenancy_row.period_to = normalized
+            else:
+                tenancy_row.period_to = raw_period_to
+                tenancy_row.warnings.append(f"Could not parse date: {raw_period_to}")
+
     # Extract and normalize numeric fields
     numeric_fields = [
         ("term_months", "term_months"),
         ("area_sqft", "area_sqft"),
         ("monthly_amount", "monthly_amount"),
         ("annual_amount", "annual_amount"),
+        ("management_fee_rate", "management_fee_rate"),
         ("security_deposit", "security_deposit"),
         ("loc_amount", "loc_amount"),
     ]
@@ -445,6 +521,9 @@ def _has_meaningful_data(row: TenancyRow) -> bool:
         row.lease_from,
         row.lease_to,
         row.area_sqft,
+        row.charge_label,
+        row.period_from,
+        row.period_to,
         row.monthly_amount,
         row.annual_amount,
     ])
@@ -521,8 +600,7 @@ def export_tenancy_to_excel(
             cell.border = _BORDER
 
             # Right-align numeric columns
-            if col_name in ["term_months", "area_sqft", "monthly_amount",
-                            "annual_amount", "security_deposit", "loc_amount"]:
+            if col_name in _NUMERIC_EXCEL_COLUMNS:
                 cell.alignment = Alignment(horizontal="right", vertical="top")
             else:
                 cell.alignment = Alignment(wrap_text=True, vertical="top")
@@ -539,8 +617,12 @@ def export_tenancy_to_excel(
         "lease_to": 12,
         "term_months": 10,
         "area_sqft": 12,
+        "charge_label": 12,
+        "period_from": 12,
+        "period_to": 12,
         "monthly_amount": 15,
         "annual_amount": 15,
+        "management_fee_rate": 18,
         "security_deposit": 15,
         "loc_amount": 15,
         "notes": 30,
@@ -561,3 +643,104 @@ def export_tenancy_to_excel(
                 output_path, len(rows), len(columns))
 
     return output_path.resolve()
+
+
+# ---------------------------------------------------------------------------
+# HTML Export with Reasoning Block
+# ---------------------------------------------------------------------------
+
+
+def export_tenancy_to_html(
+    rows: list[TenancyRow],
+    output_path: str | Path | None = None,
+    warnings_list: list[str] | None = None,
+) -> dict[str, Any]:
+    """Export tenancy rows to an HTML table and return a structured JSON result.
+
+    The returned dictionary has exactly two top-level keys:
+
+    * ``"html_table"`` – a complete ``<table>…</table>`` string with the
+      columns defined in :data:`HTML_SCHEMA_COLUMNS`.
+    * ``"reasoning"`` – an object with three keys:
+      ``"parsing_strategy"``, ``"normalization_decisions"``, and
+      ``"warnings"`` (list of strings).
+
+    If *output_path* is given the JSON result is also written to that file.
+
+    Args:
+        rows: List of :class:`TenancyRow` objects to export.
+        output_path: Optional path for the ``.json`` output file.
+        warnings_list: Additional warnings collected during parsing (appended
+            to per-row warnings already stored in each row's ``warnings``
+            attribute).
+
+    Returns:
+        Dictionary with ``"html_table"`` and ``"reasoning"`` keys.
+    """
+    # ------------------------------------------------------------------ #
+    # Build HTML table
+    # ------------------------------------------------------------------ #
+    lines: list[str] = ["<table>", "  <thead>", "    <tr>"]
+    for col in HTML_SCHEMA_COLUMNS:
+        lines.append(f"      <th>{html.escape(col)}</th>")
+    lines += ["    </tr>", "  </thead>", "  <tbody>"]
+
+    all_row_warnings: list[str] = list(warnings_list or [])
+
+    for row in rows:
+        row_dict = row.to_dict()
+        lines.append("    <tr>")
+        for col in HTML_SCHEMA_COLUMNS:
+            value = row_dict.get(col)
+            cell_text = "" if value is None else str(value)
+            lines.append(f"      <td>{html.escape(cell_text)}</td>")
+        lines.append("    </tr>")
+
+        if row.warnings:
+            all_row_warnings.extend(row.warnings)
+
+    lines += ["  </tbody>", "</table>"]
+    html_table = "\n".join(lines)
+
+    # ------------------------------------------------------------------ #
+    # Build reasoning block
+    # ------------------------------------------------------------------ #
+    normalization_decisions = [
+        "Dates converted to ISO YYYY-MM-DD format (e.g. 4/1/2022 → 2022-04-01)",
+        "Numeric amounts: commas removed, dollar signs stripped, OCR 'O'→'0' applied",
+        "Amounts in parentheses (e.g. (100)) treated as negative values",
+        "row_type assigned: lease_summary, rent_step, charge_schedule, or occupancy_summary",
+        "charge_label captures expense codes such as RENT, INSUR, CAM, TAX",
+        "period_from / period_to used for sub-lease periods (rent steps, charge schedules)",
+        "management_fee_rate stored as a decimal fraction when present",
+        "Cells with unparseable dates or numbers recorded in per-row warnings",
+    ]
+
+    result: dict[str, Any] = {
+        "html_table": html_table,
+        "reasoning": {
+            "parsing_strategy": (
+                "Property name and as_of_date detected from document header lines. "
+                "Sections distinguished by keyword headers: 'Rent Steps' → row_type=rent_step, "
+                "'Charge Schedule' → row_type=charge_schedule, "
+                "'Occupancy Summary' → row_type=occupancy_summary, "
+                "main lease table rows → row_type=lease_summary. "
+                "Column mapping uses keyword matching against header text; "
+                "falls back to positional order when headers are absent."
+            ),
+            "normalization_decisions": normalization_decisions,
+            "warnings": all_row_warnings,
+        },
+    }
+
+    if output_path is not None:
+        output_path = Path(output_path)
+        output_path.write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
+        logger.info(
+            "Wrote tenancy HTML table to %s (%d rows, %d columns)",
+            output_path,
+            len(rows),
+            len(HTML_SCHEMA_COLUMNS),
+        )
+
+    return result

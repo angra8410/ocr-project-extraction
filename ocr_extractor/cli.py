@@ -60,6 +60,17 @@ def _build_parser() -> argparse.ArgumentParser:
             "Outputs a normalized multi-column Excel file with proper data types."
         ),
     )
+    parser.add_argument(
+        "--format",
+        choices=["xlsx", "html"],
+        default="xlsx",
+        dest="output_format",
+        help=(
+            "Output format. 'xlsx' (default) writes a .xlsx file. "
+            "'html' writes a .json file containing an HTML <table> and a "
+            "reasoning block (use with --tenancy-mode)."
+        ),
+    )
     return parser
 
 
@@ -81,6 +92,7 @@ def main(argv: list[str] | None = None) -> int:
             output_path=args.output,
             debug=args.debug,
             tenancy_mode=args.tenancy_mode,
+            output_format=args.output_format,
         )
         print(f"Output written to: {output}")
         return 0
