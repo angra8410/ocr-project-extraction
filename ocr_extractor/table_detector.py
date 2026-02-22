@@ -31,10 +31,13 @@ _WHITESPACE_DENSITY_RATIO: float = 0.05
 _MIN_WHITESPACE_THRESHOLD: float = 2.0
 
 # Projection valley: fraction of peak density below which a stripe is a valley.
-_VALLEY_THRESHOLD_RATIO: float = 0.20
+# Set to 0.60 for tables with many narrow columns (15-20 columns).
+# Higher values detect more valleys; adjust based on your table's column count.
+_VALLEY_THRESHOLD_RATIO: float = 0.60
 # Minimum valley width as a fraction of the image dimension (keeps false
 # positives caused by sub-pixel noise from being promoted to column/row gaps).
-_VALLEY_MIN_GAP_DIVISOR: int = 50
+# Reduced from 50 to 200 to allow detection of much narrower column gaps in tables.
+_VALLEY_MIN_GAP_DIVISOR: int = 200
 
 
 # ---------------------------------------------------------------------------
@@ -96,7 +99,8 @@ def detect_table(
     2. Detect horizontal and vertical ruling lines with morphology.
     3. Intersect them to find cell bounding boxes.
     4. Fall back to whitespace-gap / projection-valley analysis when no lines
-       are found or when only 1 column is detected.
+       are found or when only a few columns are detected (suggesting the table
+       uses whitespace rather than ruling lines for column separation).
 
     Returns
     -------
@@ -118,16 +122,30 @@ def detect_table(
             logger.debug("No ruling lines found; falling back to whitespace analysis")
         grid = _grid_from_whitespace(gray, debug=debug)
 
-    # Sanity check: if we ended up with only 1 column on a wide image,
+    # Sanity check: if we ended up with very few columns on a wide image,
     # retry using the projection-valley approach which is more robust for
-    # scanned documents where whitespace gaps are not perfectly empty.
-    if grid.num_cols <= 1:
+    # documents where columns are defined by text alignment rather than ruling lines.
+    # A threshold of <=5 columns on images wider than 1000px suggests insufficient detection.
+    width = gray.shape[1]
+    if grid.num_cols <= 5 and width > 1000:
         if debug:
             logger.debug(
-                "Only %d column(s) detected; retrying with projection-valley fallback",
+                "Only %d column(s) detected on %dpx-wide image; "
+                "retrying with projection-valley fallback",
                 grid.num_cols,
+                width,
             )
-        grid = _grid_from_projection(gray, debug=debug)
+        grid_fallback = _grid_from_projection(gray, debug=debug)
+        
+        # Use the fallback if it found more columns (even slightly more)
+        if grid_fallback.num_cols > grid.num_cols:
+            if debug:
+                logger.debug(
+                    "Projection fallback found %d columns (vs %d from lines); using fallback",
+                    grid_fallback.num_cols,
+                    grid.num_cols,
+                )
+            grid = grid_fallback
 
     return grid
 
@@ -150,15 +168,17 @@ def _detect_ruling_lines(
     # Bridge small gaps in lines before detecting them (handles broken/faint lines)
     h_bridge = cv2.getStructuringElement(cv2.MORPH_RECT, (15, 1))
     binary_hb = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, h_bridge)
-    v_bridge = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 15))
+    # Increased vertical bridge to 25px to reconnect broken lines in tables with many columns
+    v_bridge = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 25))
     binary_vb = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, v_bridge)
 
     # Horizontal lines: long thin rectangles – use ~12.5% width (previously 20%)
     h_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (max(width // 8, 20), 1))
     h_lines_img = cv2.morphologyEx(binary_hb, cv2.MORPH_OPEN, h_kernel, iterations=1)
 
-    # Vertical lines: tall thin rectangles – use ~12.5% height (previously 20%)
-    v_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(height // 8, 20)))
+    # Vertical lines: Use ~6.25% height (reduced from 12.5%) to detect thinner column lines
+    # in tables with many columns. Min size reduced to 15px.
+    v_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(height // 16, 15)))
     v_lines_img = cv2.morphologyEx(binary_vb, cv2.MORPH_OPEN, v_kernel, iterations=1)
 
     h_coords = _line_positions(h_lines_img, axis=0)
@@ -186,7 +206,8 @@ def _line_positions(line_img: np.ndarray, axis: int) -> list[int]:
     # axis=0 → find y-positions (sum each row = numpy axis=1)
     # axis=1 → find x-positions (sum each col = numpy axis=0)
     projection = line_img.sum(axis=1 - axis)
-    threshold = projection.max() * 0.3
+    # Reduced threshold from 0.3 to 0.1 to catch weaker line signals from narrow columns
+    threshold = projection.max() * 0.1
     above = projection > threshold
 
     positions: list[int] = []

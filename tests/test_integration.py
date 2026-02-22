@@ -6,6 +6,7 @@ that the output .xlsx has the expected structure and content.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,8 @@ from openpyxl import load_workbook
 from PIL import Image, ImageDraw
 
 from ocr_extractor.extractor import extract
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -241,3 +244,270 @@ class TestPdfIntegration:
         debug_dir = tmp_path / "test_output.debug"
         assert debug_dir.exists()
         assert not debug_dir.is_relative_to(FIXTURES_DIR)
+
+    def test_pdf_multi_column_structure(self, tmp_path):
+        """The output must have multi-column structure, NOT a single-column dump.
+        
+        This test fails if the extraction produces a single-column output where
+        all data is dumped into column A (the "paragraph dump" problem).
+        
+        For tests/fixtures/test.pdf (real estate lease table), we expect:
+        - At least 15 columns (17-column real estate lease data structure)
+        - Header row with real estate column names (Property, Lease, Area, etc.)
+        - Data rows with values in multiple columns
+        """
+        # Constants for this test - updated for 17-column real estate table
+        MIN_EXPECTED_COLS = 15  # At least 15 of the 17 columns
+        MIN_HEADER_VALUES = 8  # At least 8 distinct headers
+        MIN_HEADER_COLS = 8    # Headers spread across at least 8 columns
+        MIN_DATA_ROWS = 2      # At least 2 data rows with multi-column values
+        MAX_COLS_TO_CHECK = 20  # Check up to 20 columns
+        MAX_ROWS_TO_CHECK = 20  # Limit row checking for performance
+        
+        out = tmp_path / "test_output.xlsx"
+        result = extract(str(TEST_PDF), str(out))
+        wb = load_workbook(str(result))
+        ws = wb.active
+        
+        # 1. Assert minimum column count for real estate table
+        actual_cols = ws.max_column
+        assert actual_cols >= MIN_EXPECTED_COLS, (
+            f"Insufficient columns detected! Expected >= {MIN_EXPECTED_COLS} columns "
+            f"for 17-column real estate table, but found only {actual_cols}. "
+            f"This indicates the table structure was not properly detected."
+        )
+        
+        # 2. Assert header values are in different columns (not all in A)
+        header_row = 1
+        header_values = []
+        for col_idx in range(1, min(actual_cols + 1, MAX_COLS_TO_CHECK)):
+            cell_value = ws.cell(row=header_row, column=col_idx).value
+            if cell_value and str(cell_value).strip():
+                header_values.append((col_idx, str(cell_value).strip()))
+        
+        # We expect real estate headers like "Property", "Lease", "Area", etc.
+        expected_keywords = {"Property", "Lease", "Area", "Rent", "Annual", "Security"}
+        found_keywords = set()
+        for _, val in header_values:
+            for keyword in expected_keywords:
+                if keyword.lower() in val.lower():
+                    found_keywords.add(keyword)
+        
+        assert len(header_values) >= MIN_HEADER_VALUES, (
+            f"Too few header values found. Expected at least {MIN_HEADER_VALUES} distinct headers "
+            f"for real estate table, found {len(header_values)}: {[h[1] for h in header_values[:10]]}"
+        )
+        
+        assert len(found_keywords) >= 3, (
+            f"Expected real estate header keywords not found. "
+            f"Expected at least 3 of {expected_keywords}, found {found_keywords}. "
+            f"All headers: {[h[1] for h in header_values[:10]]}"
+        )
+        
+        # Check headers are in different columns (not all in column A)
+        header_cols = {col for col, _ in header_values}
+        assert len(header_cols) >= MIN_HEADER_COLS, (
+            f"Headers are clustered in too few columns. Expected headers spread "
+            f"across >= {MIN_HEADER_COLS} columns, but found in columns: {sorted(header_cols)}"
+        )
+        
+        # 3. Assert at least N data rows have values beyond column A
+        data_rows_with_multi_cols = 0
+        
+        for row_idx in range(2, min(ws.max_row + 1, MAX_ROWS_TO_CHECK)):
+            has_value_beyond_A = False
+            for col_idx in range(2, min(actual_cols + 1, MAX_COLS_TO_CHECK)):
+                cell_value = ws.cell(row=row_idx, column=col_idx).value
+                if cell_value is not None and str(cell_value).strip():
+                    has_value_beyond_A = True
+                    break
+            if has_value_beyond_A:
+                data_rows_with_multi_cols += 1
+        
+        assert data_rows_with_multi_cols >= MIN_DATA_ROWS, (
+            f"Too few data rows with multi-column values. Expected at least "
+            f"{MIN_DATA_ROWS} rows with data in columns beyond A, but found "
+            f"only {data_rows_with_multi_cols}. This suggests a single-column dump."
+        )
+        
+        # 4. Check for expected merged cells (optional - test.pdf may not have merges)
+        # For now, just document that we're not asserting merged cells
+        merged_ranges = list(ws.merged_cells.ranges) if hasattr(ws, 'merged_cells') else []
+        # Note: Not asserting merged cells for this fixture as it may not have them
+
+    def test_pdf_generates_visual_artifacts(self, tmp_path):
+        """Generate visual artifacts for debugging and verification.
+        
+        This test produces:
+        - table_preview.html: Visual grid representation with styling
+        - layout_overlay.png: Annotated image showing detected structure
+        - test_assertions_report.md: Detailed explanation of what was checked
+        
+        These artifacts help verify that multi-column structure is preserved
+        and provide visual evidence for code review.
+        """
+        from ocr_extractor.test_artifacts import (
+            generate_assertions_report,
+            generate_layout_overlay,
+            generate_table_preview_html,
+        )
+        from ocr_extractor.preprocessor import preprocess
+        from ocr_extractor.table_detector import detect_table, detect_merges
+        from pdf2image import convert_from_path
+        import cv2
+        import numpy as np
+        
+        # Extract to Excel
+        out = tmp_path / "test_output.xlsx"
+        result = extract(str(TEST_PDF), str(out), debug=False)
+        
+        # Also get the image and grid for layout overlay
+        images = convert_from_path(str(TEST_PDF), dpi=200)
+        clean = preprocess(images[0], debug=False)
+        
+        # Detect table structure
+        arr = cv2.cvtColor(np.array(clean.convert("RGB")), cv2.COLOR_RGB2BGR)
+        gray = cv2.cvtColor(arr, cv2.COLOR_BGR2GRAY)
+        _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        
+        from ocr_extractor.table_detector import _detect_ruling_lines, _grid_from_lines
+        h_lines, v_lines = _detect_ruling_lines(binary, debug=False)
+        if h_lines is not None and v_lines is not None:
+            grid = _grid_from_lines(h_lines, v_lines, gray.shape, debug=False)
+        else:
+            grid = detect_table(clean, debug=False)
+        
+        grid = detect_merges(clean, grid, debug=False)
+        
+        # Generate artifacts
+        artifacts_dir = tmp_path / "test_artifacts"
+        artifacts_dir.mkdir(exist_ok=True)
+        
+        # 1. Table preview HTML
+        preview_html = artifacts_dir / "table_preview.html"
+        generate_table_preview_html(
+            xlsx_path=Path(result),
+            output_path=preview_html,
+            max_rows=30,
+            max_cols=15,
+        )
+        assert preview_html.exists(), "table_preview.html not generated"
+        
+        # 2. Layout overlay PNG
+        overlay_png = artifacts_dir / "layout_overlay.png"
+        generate_layout_overlay(
+            source_image=clean,
+            grid=grid,
+            output_path=overlay_png,
+        )
+        assert overlay_png.exists(), "layout_overlay.png not generated"
+        
+        # 3. Test assertions report
+        report_md = artifacts_dir / "test_assertions_report.md"
+        generate_assertions_report(
+            xlsx_path=Path(result),
+            output_path=report_md,
+            test_name="PDF Multi-Column Structure Test",
+        )
+        assert report_md.exists(), "test_assertions_report.md not generated"
+        
+        # Verify content of report
+        report_content = report_md.read_text(encoding="utf-8")
+        assert "Column Structure Analysis" in report_content
+        assert "Header Row Analysis" in report_content
+        assert "Data Row Analysis" in report_content
+        
+        # Log locations for user
+        logger.info("Visual artifacts generated:")
+        logger.info("  - %s", preview_html)
+        logger.info("  - %s", overlay_png)
+        logger.info("  - %s", report_md)
+
+    def test_pdf_golden_structure_expectations(self, tmp_path):
+        """Verify the expected multi-column structure (golden expectations).
+        
+        This test encodes the INTENDED behavior for test.pdf (real estate lease table):
+        - Expected headers: "Property", "Lease", "Area", "Rent", etc. in separate columns
+        - Expected data: Property names, unit numbers, dates, financial values
+        - This serves as a golden reference for the expected output
+        """
+        # Constants for this test
+        MAX_ROWS_TO_CHECK = 20
+        MAX_COLS_TO_CHECK = 20  # Check up to 20 columns for wide table
+        MIN_PROPERTY_ENTRIES = 2  # At least 2 properties
+        
+        out = tmp_path / "test_output.xlsx"
+        result = extract(str(TEST_PDF), str(out))
+        wb = load_workbook(str(result))
+        ws = wb.active
+        
+        # Golden expectations for real estate lease table
+        
+        # 1. Expected headers should exist in DIFFERENT columns
+        expected_keywords = ["Property", "Lease", "Area", "Rent", "Annual"]
+        
+        # Find which columns contain these header keywords
+        found_keywords = {}
+        for keyword in expected_keywords:
+            for col in range(1, min(ws.max_column + 1, MAX_COLS_TO_CHECK)):
+                cell_value = ws.cell(row=1, column=col).value
+                if cell_value and keyword.lower() in str(cell_value).lower():
+                    found_keywords[keyword] = col
+                    break
+        
+        # Assert at least 3 of the expected keywords were found
+        assert len(found_keywords) >= 3, (
+            f"Golden expectation failed: Expected at least 3 of {expected_keywords} "
+            f"in headers, but only found {len(found_keywords)}: {found_keywords}"
+        )
+        
+        # Assert keywords are in different columns (multi-column structure)
+        unique_cols = set(found_keywords.values())
+        assert len(unique_cols) >= 3, (
+            f"Golden expectation failed: Header keywords should be in different columns, "
+            f"but found in only {len(unique_cols)} columns: {sorted(unique_cols)}. "
+            f"Mapping: {found_keywords}"
+        )
+        
+        # 2. Expected data pattern: property names should appear
+        expected_properties = ["AIP KKR", "PKP LKT", "KSN Southland", "Corner Fudge", "Precision"]
+        found_properties = []
+        
+        # Search for property names in first few columns
+        for row_idx in range(2, min(ws.max_row + 1, MAX_ROWS_TO_CHECK)):
+            for col_idx in range(1, min(5, ws.max_column + 1)):  # Check first 5 columns
+                cell_value = ws.cell(row=row_idx, column=col_idx).value
+                if cell_value:
+                    val_str = str(cell_value).strip()
+                    for prop in expected_properties:
+                        if prop.lower() in val_str.lower():
+                            found_properties.append(prop)
+                            break
+        
+        # At least 2 property entries should be found
+        assert len(found_properties) >= MIN_PROPERTY_ENTRIES, (
+            f"Golden expectation failed: Expected at least {MIN_PROPERTY_ENTRIES} property entries "
+            f"from {expected_properties}, but only found {len(found_properties)}: {found_properties}"
+        )
+        
+        # 3. Numeric values should appear in multiple columns (financial data)
+        numeric_cols = 0
+        for col_idx in range(1, min(ws.max_column + 1, MAX_COLS_TO_CHECK)):
+            has_numeric = False
+            for row_idx in range(2, min(ws.max_row + 1, 10)):
+                cell_value = ws.cell(row=row_idx, column=col_idx).value
+                if cell_value is not None:
+                    try:
+                        val = float(str(cell_value).replace(",", ""))
+                        if val > 0:  # Valid positive number
+                            has_numeric = True
+                            break
+                    except (ValueError, TypeError):
+                        pass
+            if has_numeric:
+                numeric_cols += 1
+        
+        assert numeric_cols >= 5, (
+            f"Golden expectation failed: Expected at least 5 columns with numeric values "
+            f"(financial data), but only found {numeric_cols}"
+        )
