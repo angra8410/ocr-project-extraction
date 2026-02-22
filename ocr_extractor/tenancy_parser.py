@@ -272,6 +272,11 @@ def parse_grid_to_rows(grid: TableGrid) -> list[TenancyRow]:
     This function extracts data from the grid and converts it into
     structured TenancyRow objects with proper column mapping.
 
+    Section header rows (e.g. "Rent Steps", "Charge Schedule",
+    "Occupancy Summary") are detected and used to set the ``row_type``
+    of subsequent data rows.  Property name and as-of date are extracted
+    from document header lines when present.
+
     Args:
         grid: TableGrid from table detection
 
@@ -297,9 +302,42 @@ def parse_grid_to_rows(grid: TableGrid) -> list[TenancyRow]:
         # Fallback: assume columns in standard order
         header_map = _create_fallback_header_mapping(grid.num_cols)
 
+    # Extract property name and as_of_date from header/title rows if present
+    property_name: Optional[str] = None
+    as_of_date: Optional[str] = None
+    for row_idx in range(min(grid.header_rows, grid.num_rows)):
+        row_text = _get_row_full_text(row_idx, grid.num_cols, cell_map)
+        prop, aod = _extract_property_as_of_date(row_text)
+        if prop and not property_name:
+            property_name = prop
+        if aod and not as_of_date:
+            as_of_date = aod
+
+    # Track the current section type; starts as lease_summary
+    current_row_type: str = ROW_TYPE_LEASE_SUMMARY
+
     # Process data rows (skip header rows)
     for row_idx in range(grid.header_rows, grid.num_rows):
+        row_text = _get_row_full_text(row_idx, grid.num_cols, cell_map)
+
+        # Check if this row is a section header that changes the row type
+        detected_type = _detect_section_type(row_text)
+        if detected_type is not None:
+            current_row_type = detected_type
+            logger.debug("Section header detected at row %d: %r → %s",
+                         row_idx, row_text[:60], current_row_type)
+            continue  # Section header rows are not data rows
+
         tenancy_row = _extract_row_data(row_idx, grid.num_cols, cell_map, header_map)
+        tenancy_row.row_type = current_row_type
+
+        # Propagate property/date from document header.
+        # The document header is the authoritative source for these fields
+        # (each tenancy schedule document covers a single property).
+        if property_name:
+            tenancy_row.property = property_name
+        if as_of_date and not tenancy_row.as_of_date:
+            tenancy_row.as_of_date = as_of_date
 
         # Only add rows that have at least some data
         if _has_meaningful_data(tenancy_row):
@@ -309,6 +347,75 @@ def parse_grid_to_rows(grid: TableGrid) -> list[TenancyRow]:
                 len(rows), grid.num_rows, grid.num_cols)
 
     return rows
+
+
+def _get_row_full_text(row_idx: int, num_cols: int, cell_map: dict) -> str:
+    """Return the combined text of all cells in a row, space-joined."""
+    parts = []
+    for col_idx in range(num_cols):
+        cell = cell_map.get((row_idx, col_idx))
+        if cell and cell.text:
+            parts.append(cell.text.strip())
+    return " ".join(parts)
+
+
+def _detect_section_type(row_text: str) -> Optional[str]:
+    """Detect whether *row_text* is a section header and return the row type.
+
+    Returns the matching :data:`ROW_TYPE_*` constant if the row is a section
+    header, or ``None`` if it is a regular data row.
+
+    Detection is case-insensitive and tolerant of minor OCR noise (e.g.
+    "Rent  Steps", "RENT STEPS", "Charge  Schedule").
+    """
+    if not row_text:
+        return None
+    text_lower = row_text.lower()
+    if re.search(r"rent\s*steps?", text_lower):
+        return ROW_TYPE_RENT_STEP
+    if re.search(r"charge\s*schedules?", text_lower):
+        return ROW_TYPE_CHARGE_SCHEDULE
+    if re.search(r"occupancy\s*summary", text_lower):
+        return ROW_TYPE_OCCUPANCY_SUMMARY
+    return None
+
+
+def _extract_property_as_of_date(row_text: str) -> tuple[Optional[str], Optional[str]]:
+    """Extract property name and as-of date from a document header line.
+
+    Recognises patterns such as:
+    - "Property: Cornet Axol Date: 09/30/2024"
+    - "Tenancy Schedule | Property: Acme Corp | As of: 2024-09-30"
+
+    Returns a ``(property_name, as_of_date)`` tuple.  Either element may be
+    ``None`` if not found.
+    """
+    property_name: Optional[str] = None
+    as_of_date: Optional[str] = None
+
+    if not row_text:
+        return property_name, as_of_date
+
+    # Property name: "Property: <name>" up to next keyword / end of field
+    prop_match = re.search(
+        r"property\s*[:|]\s*([A-Za-z0-9 ,.\-'&]+?)(?=\s*(?:date|as\s*of|$|\|))",
+        row_text,
+        re.IGNORECASE,
+    )
+    if prop_match:
+        property_name = prop_match.group(1).strip() or None
+
+    # As-of date: "Date: MM/DD/YYYY" or "As of: YYYY-MM-DD" etc.
+    date_match = re.search(
+        r"(?:date|as\s*of)\s*[:|]\s*(\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4}|\d{4}-\d{2}-\d{2})",
+        row_text,
+        re.IGNORECASE,
+    )
+    if date_match:
+        raw_date = date_match.group(1).strip()
+        as_of_date = normalize_date(raw_date) or raw_date
+
+    return property_name, as_of_date
 
 
 def _detect_header_mapping(grid: TableGrid, cell_map: dict) -> dict[str, int]:
