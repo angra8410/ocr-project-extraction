@@ -41,6 +41,7 @@ def extract(
     input_path: str | Path,
     output_path: Optional[str | Path] = None,
     debug: bool = False,
+    tenancy_mode: bool = False,
 ) -> Path:
     """Convert *input_path* to a layout-preserving .xlsx file.
 
@@ -54,6 +55,10 @@ def extract(
     debug:
         When *True* extra diagnostic information is logged and (for image
         inputs) an annotated preview PNG is saved alongside the output.
+    tenancy_mode:
+        When *True* uses specialized parsing for tenancy schedules with
+        structured columns like Property, Tenant, Suite, Lease dates, etc.
+        This ensures multi-column Excel output with proper data types.
 
     Returns
     -------
@@ -96,7 +101,16 @@ def extract(
         _save_debug_preview(images, combined_grid, output_path)
         _save_debug_artifacts(input_path, combined_grid, output_path)
 
-    write_xlsx(combined_grid, output_path)
+    # Choose export method based on mode
+    if tenancy_mode:
+        logger.info("Using tenancy schedule parser for structured output")
+        from .tenancy_parser import export_tenancy_to_excel, parse_grid_to_rows
+
+        tenancy_rows = parse_grid_to_rows(combined_grid)
+        export_tenancy_to_excel(tenancy_rows, output_path)
+    else:
+        write_xlsx(combined_grid, output_path)
+
     return output_path.resolve()
 
 
