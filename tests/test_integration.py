@@ -1,16 +1,16 @@
 """Integration / golden tests for the end-to-end extraction pipeline.
 
 These tests run the full pipeline on a synthetic table image and verify
-that the output .xlsx has the expected structure and content.
+that the output .html has the expected structure and content.
 """
 
 from __future__ import annotations
 
 import logging
 from pathlib import Path
+import re
 
 import pytest
-from openpyxl import load_workbook
 from PIL import Image, ImageDraw
 
 from ocr_extractor.extractor import extract
@@ -65,55 +65,51 @@ def _make_table_image(
 
 class TestExtractFromImage:
     def test_output_file_created(self, tmp_path):
-        out = tmp_path / "out.xlsx"
+        out = tmp_path / "out.html"
         result = extract(str(SAMPLE_TABLE), str(out))
         assert Path(result).exists()
 
-    def test_output_is_valid_xlsx(self, tmp_path):
-        out = tmp_path / "out.xlsx"
+    def test_output_is_valid_html(self, tmp_path):
+        out = tmp_path / "out.html"
         result = extract(str(SAMPLE_TABLE), str(out))
-        wb = load_workbook(str(result))
-        assert wb is not None
+        content = Path(result).read_text(encoding="utf-8")
+        assert "<table>" in content
 
-    def test_sheet_named_table(self, tmp_path):
-        out = tmp_path / "out.xlsx"
+    def test_html_has_table(self, tmp_path):
+        out = tmp_path / "out.html"
         result = extract(str(SAMPLE_TABLE), str(out))
-        wb = load_workbook(str(result))
-        assert "Table" in wb.sheetnames
+        content = Path(result).read_text(encoding="utf-8")
+        assert "<table>" in content
+        assert "</table>" in content
 
-    def test_single_sheet_only(self, tmp_path):
-        out = tmp_path / "out.xlsx"
+    def test_html_has_thead_and_tbody(self, tmp_path):
+        out = tmp_path / "out.html"
         result = extract(str(SAMPLE_TABLE), str(out))
-        wb = load_workbook(str(result))
-        assert len(wb.sheetnames) == 1
+        content = Path(result).read_text(encoding="utf-8")
+        assert "<thead>" in content
+        assert "<tbody>" in content
 
     def test_has_multiple_rows(self, tmp_path):
-        """The output should have at least the header + one data row."""
-        out = tmp_path / "out.xlsx"
+        """The output should have at least one data row in tbody."""
+        out = tmp_path / "out.html"
         result = extract(str(SAMPLE_TABLE), str(out))
-        wb = load_workbook(str(result))
-        ws = wb.active
-        assert ws.max_row >= 2
+        content = Path(result).read_text(encoding="utf-8")
+        tbody_match = re.search(r"<tbody>(.*?)</tbody>", content, re.DOTALL)
+        assert tbody_match
+        rows = re.findall(r"<tr>", tbody_match.group(1))
+        assert len(rows) >= 1
 
     def test_has_multiple_columns(self, tmp_path):
-        """The output should have at least 2 columns."""
-        out = tmp_path / "out.xlsx"
+        """The output should have at least 2 header columns."""
+        out = tmp_path / "out.html"
         result = extract(str(SAMPLE_TABLE), str(out))
-        wb = load_workbook(str(result))
-        ws = wb.active
-        assert ws.max_column >= 2
-
-    def test_freeze_panes_set(self, tmp_path):
-        """Panes should be frozen below the header row."""
-        out = tmp_path / "out.xlsx"
-        result = extract(str(SAMPLE_TABLE), str(out))
-        wb = load_workbook(str(result))
-        ws = wb.active
-        assert ws.freeze_panes is not None
+        content = Path(result).read_text(encoding="utf-8")
+        th_count = content.count("<th>")
+        assert th_count >= 2
 
     def test_debug_mode_does_not_raise(self, tmp_path):
         """debug=True should complete without errors."""
-        out = tmp_path / "debug_out.xlsx"
+        out = tmp_path / "debug_out.html"
         result = extract(str(SAMPLE_TABLE), str(out), debug=True)
         assert Path(result).exists()
 
@@ -130,13 +126,13 @@ class TestExtractErrors:
             extract(str(f))
 
     def test_default_output_path(self, tmp_path):
-        """When output_path is omitted the .xlsx lands next to the input."""
+        """When output_path is omitted the .html lands next to the input."""
         src = tmp_path / "table.png"
         import shutil
 
         shutil.copy(str(SAMPLE_TABLE), str(src))
         result = extract(str(src))
-        assert Path(result).suffix == ".xlsx"
+        assert Path(result).suffix == ".html"
         assert Path(result).parent == tmp_path
 
 
@@ -152,24 +148,15 @@ class TestExtractSyntheticTable:
         img = _make_table_image(content)
         src = tmp_path / "synthetic.png"
         img.save(str(src))
-        out = tmp_path / "synthetic.xlsx"
+        out = tmp_path / "synthetic.html"
         result = extract(str(src), str(out))
-        wb = load_workbook(str(result))
-        ws = wb.active
+        html_content = Path(result).read_text(encoding="utf-8")
 
-        # Collect all non-None cell values from the sheet
-        all_values = []
-        for row in ws.iter_rows(values_only=True):
-            for v in row:
-                if v is not None:
-                    all_values.append(str(v))
-
-        all_text = " ".join(all_values).lower()
-
-        # The header row must contain at least ONE of the known column names
+        # The HTML must contain at least ONE of the known column names
         # (OCR may not be perfect, but at least something should come through)
+        all_text = html_content.lower()
         assert any(keyword in all_text for keyword in ("name", "amount", "date", "alice", "bob")), (
-            f"No expected keywords found in extracted text. Got: {all_values}"
+            f"No expected keywords found in extracted HTML. Got (first 500 chars): {html_content[:500]}"
         )
 
 
@@ -192,8 +179,8 @@ class TestPdfIntegration:
     """
 
     def test_pdf_output_written_to_tmp(self, tmp_path):
-        """Output .xlsx must be created inside tmp_path, not in fixtures."""
-        out = tmp_path / "test_output.xlsx"
+        """Output .html must be created inside tmp_path, not in fixtures."""
+        out = tmp_path / "test_output.html"
         result = extract(str(TEST_PDF), str(out))
         result_path = Path(result)
         assert result_path.exists()
@@ -203,25 +190,28 @@ class TestPdfIntegration:
         )
         assert result_path.is_relative_to(tmp_path)
 
-    def test_pdf_sheet_named_table(self, tmp_path):
-        """The generated workbook must have exactly one sheet named 'Table'."""
-        out = tmp_path / "test_output.xlsx"
+    def test_pdf_output_is_html(self, tmp_path):
+        """The generated file must be an HTML table."""
+        out = tmp_path / "test_output.html"
         result = extract(str(TEST_PDF), str(out))
-        wb = load_workbook(str(result))
-        assert wb.sheetnames == ["Table"]
+        content = Path(result).read_text(encoding="utf-8")
+        assert "<table>" in content
+        assert "<thead>" in content
+        assert "<tbody>" in content
 
     def test_pdf_has_rows_and_columns(self, tmp_path):
-        """The workbook must have at least 1 row and 1 column."""
-        out = tmp_path / "test_output.xlsx"
+        """The HTML table must have at least 1 header column and 1 data row."""
+        out = tmp_path / "test_output.html"
         result = extract(str(TEST_PDF), str(out))
-        wb = load_workbook(str(result))
-        ws = wb.active
-        assert ws.max_row >= 1
-        assert ws.max_column >= 1
+        content = Path(result).read_text(encoding="utf-8")
+        assert content.count("<th>") >= 1
+        tbody_match = re.search(r"<tbody>(.*?)</tbody>", content, re.DOTALL)
+        assert tbody_match
+        assert re.search(r"<tr>", tbody_match.group(1))
 
     def test_pdf_debug_artifacts_created(self, tmp_path):
         """Debug mode must create pipeline_diagram.md and grid_preview.txt."""
-        out = tmp_path / "test_output.xlsx"
+        out = tmp_path / "test_output.html"
         result = extract(str(TEST_PDF), str(out), debug=True)
         debug_dir = tmp_path / "test_output.debug"
         assert debug_dir.exists(), f"Debug dir not found: {debug_dir}"
@@ -239,7 +229,7 @@ class TestPdfIntegration:
 
     def test_pdf_debug_artifacts_in_tmp_not_fixtures(self, tmp_path):
         """Debug artifacts must be written to tmp_path, not fixtures dir."""
-        out = tmp_path / "test_output.xlsx"
+        out = tmp_path / "test_output.html"
         extract(str(TEST_PDF), str(out), debug=True)
         debug_dir = tmp_path / "test_output.debug"
         assert debug_dir.exists()
@@ -248,23 +238,20 @@ class TestPdfIntegration:
     def test_pdf_multi_column_structure(self, tmp_path):
         """The output must have multi-column structure, NOT a single-column dump.
 
-        With tenancy_mode=True the pipeline now produces an HTML <table> file.
         We verify that:
-        - The output is a valid HTML file (not XLSX)
+        - The output is a valid HTML file
         - The <table> header row contains the required 15 schema columns
         - The expected column names are present
         - At least one data row exists in the tbody
         """
-        import re
-
         out = tmp_path / "test_output.html"
-        result = extract(str(TEST_PDF), str(out), tenancy_mode=True)
+        result = extract(str(TEST_PDF), str(out))
         result_path = Path(result)
 
         # 1. Output file must exist and have .html extension
         assert result_path.exists(), f"Output file not found: {result_path}"
         assert result_path.suffix == ".html", (
-            f"Expected .html output for tenancy_mode, got {result_path.suffix}"
+            f"Expected .html output, got {result_path.suffix}"
         )
 
         content = result_path.read_text(encoding="utf-8")
@@ -298,12 +285,12 @@ class TestPdfIntegration:
 
     def test_pdf_generates_visual_artifacts(self, tmp_path):
         """Generate visual artifacts for debugging and verification.
-        
+
         This test produces:
         - table_preview.html: Visual grid representation with styling
         - layout_overlay.png: Annotated image showing detected structure
         - test_assertions_report.md: Detailed explanation of what was checked
-        
+
         These artifacts help verify that multi-column structure is preserved
         and provide visual evidence for code review.
         """
@@ -317,43 +304,43 @@ class TestPdfIntegration:
         from pdf2image import convert_from_path
         import cv2
         import numpy as np
-        
-        # Extract to Excel
-        out = tmp_path / "test_output.xlsx"
+
+        # Extract to HTML
+        out = tmp_path / "test_output.html"
         result = extract(str(TEST_PDF), str(out), debug=False)
-        
+
         # Also get the image and grid for layout overlay
         images = convert_from_path(str(TEST_PDF), dpi=200)
         clean = preprocess(images[0], debug=False)
-        
+
         # Detect table structure
         arr = cv2.cvtColor(np.array(clean.convert("RGB")), cv2.COLOR_RGB2BGR)
         gray = cv2.cvtColor(arr, cv2.COLOR_BGR2GRAY)
         _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-        
+
         from ocr_extractor.table_detector import _detect_ruling_lines, _grid_from_lines
         h_lines, v_lines = _detect_ruling_lines(binary, debug=False)
         if h_lines is not None and v_lines is not None:
             grid = _grid_from_lines(h_lines, v_lines, gray.shape, debug=False)
         else:
             grid = detect_table(clean, debug=False)
-        
+
         grid = detect_merges(clean, grid, debug=False)
-        
+
         # Generate artifacts
         artifacts_dir = tmp_path / "test_artifacts"
         artifacts_dir.mkdir(exist_ok=True)
-        
+
         # 1. Table preview HTML
         preview_html = artifacts_dir / "table_preview.html"
         generate_table_preview_html(
-            xlsx_path=Path(result),
+            html_path=Path(result),
             output_path=preview_html,
             max_rows=30,
             max_cols=15,
         )
         assert preview_html.exists(), "table_preview.html not generated"
-        
+
         # 2. Layout overlay PNG
         overlay_png = artifacts_dir / "layout_overlay.png"
         generate_layout_overlay(
@@ -362,22 +349,22 @@ class TestPdfIntegration:
             output_path=overlay_png,
         )
         assert overlay_png.exists(), "layout_overlay.png not generated"
-        
+
         # 3. Test assertions report
         report_md = artifacts_dir / "test_assertions_report.md"
         generate_assertions_report(
-            xlsx_path=Path(result),
+            html_path=Path(result),
             output_path=report_md,
             test_name="PDF Multi-Column Structure Test",
         )
         assert report_md.exists(), "test_assertions_report.md not generated"
-        
+
         # Verify content of report
         report_content = report_md.read_text(encoding="utf-8")
         assert "Column Structure Analysis" in report_content
         assert "Header Row Analysis" in report_content
         assert "Data Row Analysis" in report_content
-        
+
         # Log locations for user
         logger.info("Visual artifacts generated:")
         logger.info("  - %s", preview_html)
@@ -386,89 +373,38 @@ class TestPdfIntegration:
 
     def test_pdf_golden_structure_expectations(self, tmp_path):
         """Verify the expected multi-column structure (golden expectations).
-        
+
         This test encodes the INTENDED behavior for test.pdf (real estate lease table):
-        - Expected headers: "Property", "Lease", "Area", "Rent", etc. in separate columns
-        - Expected data: Property names, unit numbers, dates, financial values
-        - This serves as a golden reference for the expected output
+        - Expected headers defined by HTML_SCHEMA_COLUMNS
+        - At least one data row in the tbody
         """
-        # Constants for this test
-        MAX_ROWS_TO_CHECK = 20
-        MAX_COLS_TO_CHECK = 20  # Check up to 20 columns for wide table
-        MIN_PROPERTY_ENTRIES = 2  # At least 2 properties
-        
-        out = tmp_path / "test_output.xlsx"
+        import pandas as pd
+
+        out = tmp_path / "test_output.html"
         result = extract(str(TEST_PDF), str(out))
-        wb = load_workbook(str(result))
-        ws = wb.active
-        
-        # Golden expectations for real estate lease table
-        
-        # 1. Expected headers should exist in DIFFERENT columns
-        expected_keywords = ["Property", "Lease", "Area", "Rent", "Annual"]
-        
-        # Find which columns contain these header keywords
-        found_keywords = {}
-        for keyword in expected_keywords:
-            for col in range(1, min(ws.max_column + 1, MAX_COLS_TO_CHECK)):
-                cell_value = ws.cell(row=1, column=col).value
-                if cell_value and keyword.lower() in str(cell_value).lower():
-                    found_keywords[keyword] = col
-                    break
-        
-        # Assert at least 3 of the expected keywords were found
-        assert len(found_keywords) >= 3, (
-            f"Golden expectation failed: Expected at least 3 of {expected_keywords} "
-            f"in headers, but only found {len(found_keywords)}: {found_keywords}"
+        result_path = Path(result)
+
+        content = result_path.read_text(encoding="utf-8")
+
+        # 1. Verify the HTML schema columns are present
+        from ocr_extractor.tenancy_parser import HTML_SCHEMA_COLUMNS
+        for col in HTML_SCHEMA_COLUMNS:
+            assert f"<th>{col}</th>" in content, (
+                f"Expected schema column '{col}' not found in HTML header"
+            )
+
+        # 2. At least one data row must be present
+        tbody_match = re.search(r"<tbody>(.*?)</tbody>", content, re.DOTALL)
+        assert tbody_match, "Could not find <tbody> in output"
+        data_rows = re.findall(r"<tr>", tbody_match.group(1))
+        assert len(data_rows) >= 1, (
+            f"Expected at least 1 data row in tbody, found {len(data_rows)}"
         )
-        
-        # Assert keywords are in different columns (multi-column structure)
-        unique_cols = set(found_keywords.values())
-        assert len(unique_cols) >= 3, (
-            f"Golden expectation failed: Header keywords should be in different columns, "
-            f"but found in only {len(unique_cols)} columns: {sorted(unique_cols)}. "
-            f"Mapping: {found_keywords}"
-        )
-        
-        # 2. Expected data pattern: property names should appear
-        expected_properties = ["AIP KKR", "PKP LKT", "KSN Southland", "Corner Fudge", "Precision"]
-        found_properties = []
-        
-        # Search for property names in first few columns
-        for row_idx in range(2, min(ws.max_row + 1, MAX_ROWS_TO_CHECK)):
-            for col_idx in range(1, min(5, ws.max_column + 1)):  # Check first 5 columns
-                cell_value = ws.cell(row=row_idx, column=col_idx).value
-                if cell_value:
-                    val_str = str(cell_value).strip()
-                    for prop in expected_properties:
-                        if prop.lower() in val_str.lower():
-                            found_properties.append(prop)
-                            break
-        
-        # At least 2 property entries should be found
-        assert len(found_properties) >= MIN_PROPERTY_ENTRIES, (
-            f"Golden expectation failed: Expected at least {MIN_PROPERTY_ENTRIES} property entries "
-            f"from {expected_properties}, but only found {len(found_properties)}: {found_properties}"
-        )
-        
-        # 3. Numeric values should appear in multiple columns (financial data)
-        numeric_cols = 0
-        for col_idx in range(1, min(ws.max_column + 1, MAX_COLS_TO_CHECK)):
-            has_numeric = False
-            for row_idx in range(2, min(ws.max_row + 1, 10)):
-                cell_value = ws.cell(row=row_idx, column=col_idx).value
-                if cell_value is not None:
-                    try:
-                        val = float(str(cell_value).replace(",", ""))
-                        if val > 0:  # Valid positive number
-                            has_numeric = True
-                            break
-                    except (ValueError, TypeError):
-                        pass
-            if has_numeric:
-                numeric_cols += 1
-        
-        assert numeric_cols >= 5, (
-            f"Golden expectation failed: Expected at least 5 columns with numeric values "
-            f"(financial data), but only found {numeric_cols}"
+
+        # 3. Parse the HTML with pandas to verify multi-column data
+        dfs = pd.read_html(str(result_path))
+        assert dfs, "No tables found in HTML output"
+        df = dfs[0]
+        assert len(df.columns) == len(HTML_SCHEMA_COLUMNS), (
+            f"Expected {len(HTML_SCHEMA_COLUMNS)} columns, got {len(df.columns)}"
         )

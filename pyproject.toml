@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "ocr-extractor"
 version = "0.1.0"
-description = "OCR + table-structure reconstruction: convert images/PDFs to .xlsx"
+description = "OCR + table-structure reconstruction: convert images/PDFs to an HTML table"
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
